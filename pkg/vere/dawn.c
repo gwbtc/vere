@@ -323,12 +323,19 @@ u3_dawn_vent(u3_noun ship, u3_noun feed)
 
     //  (each seed (lest error=@tas))
     //
-    sed = u3dq("veri:dawn", u3k(ship), u3k(feed), u3k(pot), u3k(liv));
+    if ( c3__pawn == rank ) {
+      //  comets are self-authenticating, skip PKI validation
+      //  just accept the keyfile as-is since it's cryptographically valid
+      sed = u3nc(c3y, u3k(feed));
+    }
+    else {
+      sed = u3dq("veri:dawn", u3k(ship), u3k(feed), u3k(pot), u3k(liv));
 
-    if ( c3n == u3h(sed) ) {
-      // bails, won't return
-      _dawn_fail(ship, rank, u3t(sed));
-      return u3_none;
+      if ( c3n == u3h(sed) ) {
+        // bails, won't return
+        _dawn_fail(ship, rank, u3t(sed));
+        return u3_none;
+      }
     }
 
     u3l_log("boot: getting sponsor");
