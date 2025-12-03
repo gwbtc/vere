@@ -663,6 +663,23 @@ _boothack_key(u3_noun kef)
   return seed;
 }
 
+/* _boothack_is_comet_key(): check if a parsed key is for a comet
+*/
+static c3_o
+_boothack_is_comet_key(u3_noun seed)
+{
+  //  if it's a single seed, check if ship is a pawn (comet)
+  //
+  if ( c3y == u3ud(u3h(seed)) ) {
+    u3_noun ship = u3h(seed);
+    u3_noun clan = u3dc("clan:title", ship, u3_nul);
+    c3_o is_pawn = (c3__pawn == clan);
+    u3z(clan);
+    return is_pawn;
+  }
+  return c3n;
+}
+
 /* _boothack_doom(): parse CLI arguments into $doom
 */
 static u3_noun
@@ -691,7 +708,9 @@ _boothack_doom(void)
   }
   else if ( 0 != u3_Host.ops_u.who_c ||
             ( 0 != u3_Host.ops_u.fak_c &&
-              28 < strlen(u3_Host.ops_u.fak_c) ) ) {
+              28 < strlen(u3_Host.ops_u.fak_c) ) ||
+            0 != u3_Host.ops_u.key_c ||
+            0 != u3_Host.ops_u.gen_c ) {
     u3_noun kef;
 
     if ( 0 != u3_Host.ops_u.key_c ) {
@@ -723,8 +742,13 @@ _boothack_doom(void)
     if ( 0 != u3_Host.ops_u.fak_c ) {
       bot = u3nc(c3__fake, u3nc(u3_nul, _boothack_key(kef)));
     }
-    else
-      bot = u3nc(c3__dawn, _boothack_key(kef));
+    else {
+      u3_noun seed = _boothack_key(kef);
+      //  check if this is a comet key - if so, use dawn path but 
+      //  the dawn.c logic will skip mining and validation
+      //
+      bot = u3nc(c3__dawn, seed);
+    }
   }
   else {
     //  XX allow parent star to be specified?
