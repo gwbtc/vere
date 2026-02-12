@@ -708,6 +708,21 @@ _boothack_key(u3_noun kef)
   return seed;
 }
 
+/* _boothack_is_comet_key(): check if a parsed key is for a comet
+*/
+static c3_o
+_boothack_is_comet_key(u3_noun seed)
+{
+  if ( c3y == u3ud(u3h(seed)) ) {
+    u3_noun ship = u3h(seed);
+    u3_noun clan = u3dc("clan:title", ship, u3_nul);
+    c3_o u3n_is_pawn = (c3__pawn == clan);
+    u3z(clan);
+    return u3n_is_pawn;
+  }
+  return c3n;
+}
+
 /* _boothack_doom(): parse CLI arguments into $doom
 */
 static u3_noun
