@@ -748,7 +748,11 @@ _boothack_doom(void)
     u3z(whu);
     u3z(fak);
   }
-  else if ( 0 != u3_Host.ops_u.who_c ) {
+  else if ( 0 != u3_Host.ops_u.who_c ||              // -w
+            ( 0 != u3_Host.ops_u.fak_c &&
+              28 < strlen(u3_Host.ops_u.fak_c) ) ||  // -F comet
+            0 != u3_Host.ops_u.key_c ||              // -k
+            0 != u3_Host.ops_u.gen_c ) {             // -G
     u3_noun kef;
 
     if ( 0 != u3_Host.ops_u.key_c ) {
@@ -777,11 +781,17 @@ _boothack_doom(void)
       exit(1);
     }
 
-    bot = u3nc(c3__dawn, _boothack_key(kef));
+    if ( 0 != u3_Host.ops_u.fak_c ) {
+      bot = u3nc(c3__fake, u3nc(u3_nul, _boothack_key(kef)));
+    }
+    else {
+      u3_noun seed = _boothack_key(kef);
+      bot = u3nc(c3__dawn, seed);
+    }
   }
   else {
-    //  XX allow parent star to be specified?
-    //
+    // if no key is provided, mine a comet with +come:dawn
+    // XX allow mining under a specified star(s)?
     bot = u3nc(c3__come, u3_nul);
   }
 
