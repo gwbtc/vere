@@ -323,12 +323,18 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
 
     //  (each feed:jael (lest error=term))
     //
-    fed = u3dq("veri:dawn", u3k(ship), u3k(feed), u3k(pot), u3k(liv));
+    if ( c3__pawn == rank ) {
+      //  comets skip +veri:dawn
+      fed = u3nc(c3y, u3k(feed));
+    }
+    else {
+      fed = u3dq("veri:dawn", u3k(ship), u3k(feed), u3k(pot), u3k(liv));
 
-    if ( c3n == u3h(fed) ) {
-      // bails, won't return
-      _dawn_fail(ship, rank, u3t(fed));
-      return u3_none;
+      if ( c3n == u3h(fed) ) {
+        // bails, won't return
+        _dawn_fail(ship, rank, u3t(fed));
+        return u3_none;
+      }
     }
 
     u3_assert(c3y == u3du(u3h(u3t(fed))) && u3h(u3h(u3t(fed))) == 2);
