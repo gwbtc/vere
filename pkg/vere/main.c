@@ -552,10 +552,6 @@ _main_getopt(c3_i argc, c3_c** argv)
 #endif
 
   if ( 0 != u3_Host.ops_u.fak_c ) {
-    if ( 28 < strlen(u3_Host.ops_u.fak_c) ) {
-      fprintf(stderr, "fake comets are forbidden\r\n");
-      return c3n;
-    }
     if ( 0 != u3_Host.ops_u.who_c ) {
       fprintf(stderr, "-F and -w cannot be used together\r\n");
       return c3n;
