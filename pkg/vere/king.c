@@ -825,8 +825,6 @@ _boothack_doom(void)
       u3_noun seed = _boothack_key(kef);
       bot = u3nc(c3__dawn, seed);
     }
-    else
-      bot = u3nc(c3__dawn, _boothack_key(kef));
   }
   else {
     // if no key is provided, mine a comet with +come:dawn
