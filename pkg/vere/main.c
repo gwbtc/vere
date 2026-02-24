@@ -598,6 +598,10 @@ _main_getopt(c3_i argc, c3_c** argv)
     u3_Host.ops_u.tem = c3y;
   }
 
+  if ( 0 == u3_Host.ops_u.gat_c ) {
+    u3_Host.ops_u.gat_c = "https://lamp.lmao.wang";
+  }
+
   {
     struct stat s;
     //  catch invalid boot
@@ -675,8 +679,7 @@ _main_getopt(c3_i argc, c3_c** argv)
     }
     //TODO  use brass pill from b.u.org/props/etc eventually
     c3_i res_i = asprintf(&u3_Host.ops_u.url_c,
-                          "https://bootstrap.urbit.org/urbit-v%s.pill",
-                          version_c);
+                          "https://m.tinnus-napbus.xyz/pub/gw-solid.pill");
     if ( res_i < 0 ) {
       fprintf(stderr, "failed to construct pill URL\n");
       return c3n;
