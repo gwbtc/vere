@@ -286,12 +286,21 @@ _dawn_is_az(u3_noun who, u3_noun fed)
   return c3n;
 }
 
+/*  _dawn_feed_to_point: convert feed to point:jael
+*/
+static u3_noun
+_dawn_feed_to_point(u3_noun fed)
+{
+  u3_noun pon = u3do("fake-point:dawn", fed);
+  return pon;
+}
+
 /* u3_dawn_vent(): validated boot event
 */
 u3_noun
 u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
 {
-  u3_noun fed, pos, pon, zar, tuf, src, sax;
+  u3_noun fed, pos, pon, zar, tuf, src, sax, pot;
 
   u3_noun rank = u3do("clan:title", u3k(ship));
 
@@ -302,12 +311,13 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
   {
     //  +point:jael: gateway state
     //
-    u3_noun pot;
-
     if ( c3__pawn == rank && c3y == azi_o ) {
       //  irrelevant, just bunt +point
       //
       pot = u3v_wish("*point:jael");
+    }
+    else if ( c3__pawn == rank && c3n == azi_o ) {
+      pot = _dawn_feed_to_point(u3k(feed));
     }
     else  if ( c3__earl == rank ) {
       pot = u3v_wish("*point:jael");
@@ -344,7 +354,12 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
 
     //  (each feed:jael (lest error=term))
     //
-    fed = u3dq("veri:dawn", u3k(ship), u3k(feed), u3k(pot), u3k(liv));
+    if ( c3n == azi_o && c3__earl == rank ) {
+      fed = u3nc(c3y, u3k(feed));
+    }
+    else {
+      fed = u3dq("veri:dawn", u3k(ship), u3k(feed), u3k(pot), u3nc(u3k(liv), azi_o));
+    }
 
     if ( c3n == u3h(fed) ) {
       // bails, won't return
@@ -356,8 +371,16 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
     *rift = u3k(u3h(u3t(u3t(u3t(fed)))));
 
     u3l_log("boot: getting sponsor");
-    pos = _dawn_sponsor(u3k(ship), u3k(rank), u3k(pot), azi_o);
-    u3z(pot); u3z(liv);
+
+    if ( c3n == azi_o && c3__pawn == rank ) {
+      pos = u3k(ship);
+    }
+    else {
+      pos = _dawn_sponsor(u3k(ship), u3k(rank), u3k(pot), azi_o);
+      u3z(pot);
+    }
+
+    u3z(liv);
   }
 
 
@@ -369,6 +392,10 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
     sprintf(url_c, "%s/_~_/=lamp=/j",
             u3_Host.ops_u.gat_c);
     zar = u3_king_get_noun(url_c);
+
+    if ( c3n == azi_o && c3__pawn == rank ) {
+      zar = u3kdb_put(u3k(zar), u3k(ship), u3k(pot));
+    }
   }
 
   //  (list turf): ames domains
@@ -381,18 +408,26 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
 
     sprintf(url_c, "%s/_~_/=turf=/j",
             u3_Host.ops_u.gat_c);
-    u3_noun tuf = u3_king_get_noun(url_c);
+    tuf = u3_king_get_noun(url_c);
   }
   
   //  (list ship): %saxo sponsorship chain
   //
   {
     u3l_log("boot: retrieving sponsorship chain");
-    u3_noun who = u3dc("scot", 'p', u3k(pos));
-    c3_c* who_c = u3r_string(who);
-    sprintf(url_c, "%s/_~_/=saxo=/j/%s",
-            u3_Host.ops_u.gat_c, who_c);
-    sax = u3_king_get_noun(url_c);
+
+    if ( c3n == azi_o && c3__pawn == rank ) {
+      sax = u3nc(u3k(ship), u3_nul);
+    }
+    else {
+      u3_noun who = u3dc("scot", 'p', u3k(pos));
+      c3_c* who_c = u3r_string(who);
+      sprintf(url_c, "%s/_~_/=saxo=/j/%s",
+              u3_Host.ops_u.gat_c, who_c);
+      sax = u3_king_get_noun(url_c);
+      u3z(who);
+      c3_free(who_c);
+    }
     
     // shouldn't occur as saxo includes the ship itself
     //
@@ -401,9 +436,6 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
       _dawn_fail(ship, rank, u3_nul);
       return u3_none;
     }
-
-    u3z(who);
-    c3_free(who_c);
   }
 
   pon = u3_nul;
@@ -421,6 +453,11 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
 
     //  retrieve +point:jael of pos (sponsor of ship)
     //
+    if ( c3n == azi_o && c3__pawn == rank ) {
+      pon = u3nc(u3nc(u3k(pos), u3k(pot)), pon);
+      u3z(pot);
+    }
+    else
     {
       u3_noun top = u3dc("scot", c3__p, u3k(pos));
       c3_c* pot_c = u3r_string(top);
