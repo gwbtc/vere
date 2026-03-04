@@ -434,6 +434,7 @@ pub fn build(b: *std.Build) !void {
             "http2/http2_debug_state.c",
             "http2/scheduler.c",
             "http2/stream.c",
+            "websocket.c",
             "tunnel.c",
         },
         .flags = &.{
