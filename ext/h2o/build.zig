@@ -35,6 +35,11 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    const wslay = b.dependency("wslay", .{
+        .target = target,
+        .optimize = optimize
+    });
+
     const sse2neon_c = b.dependency("sse2neon", .{
         .target = target,
         .optimize = optimize,
@@ -337,6 +342,7 @@ pub fn build(b: *std.Build) !void {
     // h2o.linkLibrary(libyrmcds);
     h2o.linkLibrary(picohttpparser);
     h2o.linkLibrary(picotls);
+    h2o.linkLibrary(wslay.artifact("wslay"));
     // h2o.linkLibrary(ssl_conservatory);
     h2o.linkLibC();
 
@@ -438,6 +444,7 @@ pub fn build(b: *std.Build) !void {
             "-pthread",
             "-DH2O_USE_LIBUV",
             "-DH2O_USE_PICOTLS",
+            "-DWSLAY_VERSION=\\\"1.1.1\\\"",
             if (t.os.tag == .linux) "-D_GNU_SOURCE" else "",
         },
     });

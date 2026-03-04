@@ -3,6 +3,7 @@
 #include "vere.h"
 
 #include "h2o.h"
+#include "h2o/websocket.h"
 #include "noun.h"
 #include "openssl/err.h"
 #include "openssl/ssl.h"
