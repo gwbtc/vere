@@ -3,6 +3,9 @@
 #include "vere.h"
 
 #include "h2o.h"
+#include <limits.h>
+#include <string.h>
+#include "h2o/websocket.h"
 #include "noun.h"
 #include "openssl/err.h"
 #include "openssl/ssl.h"
@@ -24,8 +27,12 @@ typedef struct _u3_h2o_serv {
     u3_rsat_init = 0,                   //  initialized
     u3_rsat_plan = 1,                   //  planned
     u3_rsat_peek = 2,                   //  peek planned
-    u3_rsat_ripe = 3                    //  responded
+    u3_rsat_ripe = 3,                   //  responding
   } u3_rsat;
+
+// WebSockets
+typedef struct _u3_hws u3_hws;
+// 
 
 /* u3_hreq: incoming http request.
 */
@@ -39,6 +46,9 @@ typedef struct _u3_h2o_serv {
     struct _u3_hcon* hon_u;             //  connection backlink
     struct _u3_hreq* nex_u;             //  next in connection's list
     struct _u3_hreq* pre_u;             //  prev in connection's list
+    // WebSockets
+    u3_hws*          wsu_u;             //  websocket session (optional)
+    // 
   } u3_hreq;
 
   /* u3_preq: scry-backed http request.
@@ -115,7 +125,35 @@ typedef struct _u3_httd {
   u3p(u3h_root)      sax_p;             //  url->scry cache
   u3p(u3h_root)      nax_p;             //  scry->noun cache
   u3t_spin*          stk_u;             //  spin stack 
+  // WebSockets
+  u3_hws*            web_u;             //  websocket sessions
+  c3_w               wid_l;             //  next websocket id
+  // 
 } u3_httd;
+
+// WebSockets
+typedef enum {
+  u3_hws_pending = 0,
+  u3_hws_open    = 1,
+  u3_hws_closing = 2,
+  u3_hws_closed  = 3,
+} u3_hwsat;
+
+struct _u3_hws {
+  h2o_websocket_conn_t* woc_u;          // h2o websocket connection
+  u3_httd*              htd_u;          // device backpointer
+  u3_hreq*              req_u;          // pending request (handshake)
+  u3_hws*               nex_u;          // next in list
+  u3_hws*               pre_u;          // prev in list
+  u3_hwsat              sat_e;          // websocket state
+  c3_w                  wid_l;          // websocket id
+  c3_l                  sev_l;          // server id
+  c3_l                  coq_l;          // connection id
+  c3_l                  seq_l;          // request id
+  c3_c                  key_c[29];      // sec-websocket-key buffer
+};
+//
+
 
 static u3_weak _http_rec_to_httq(h2o_req_t* rec_u);
 static u3_hreq* _http_req_prepare(h2o_req_t* rec_u, u3_hreq* (*new_f)(u3_hcon*, h2o_req_t*));
@@ -128,6 +166,20 @@ static void _http_start_respond(u3_hreq* req_u,
                     u3_noun data,
                     u3_noun complete);
 static void _http_spin_timer_cb(uv_timer_t* tim_u);
+
+// WebSockets
+static void _http_ws_handshake(u3_hreq* req_u, u3_noun req, const c3_c* client_key);
+static void _http_ws_message_cb(h2o_websocket_conn_t *conn, const struct wslay_event_on_msg_recv_arg *arg);
+static void _http_ws_link(u3_httd* htd_u, u3_hws* web_u);
+static void _http_ws_unlink(u3_hws* web_u);
+static u3_hws* _http_ws_find(u3_httd* htd_u, c3_w wid_l);
+static void _http_ws_disconnect(u3_hws* web_u);
+static void _http_ws_plan_event(u3_hws* web_u, u3_noun event);
+static void _http_ws_close_all(u3_httd* htd_u);
+static void _http_ws_detach_request(u3_hreq* req_u);
+//
+
+
 
 static const c3_i TCP_BACKLOG = 16;
 static const c3_w HEARTBEAT_TIMEOUT = 20 * 1000;
@@ -574,6 +626,10 @@ typedef struct _u3_hgen {
 static void
 _http_req_close(u3_hreq* req_u)
 {
+  if ( 0 != req_u->wsu_u ) {
+    _http_ws_detach_request(req_u);
+  }
+  
   //  client canceled request before response
   //
   if ( u3_rsat_plan == req_u->sat_e ) {
@@ -641,6 +697,12 @@ _http_req_timer_cb(uv_timer_t* tim_u)
       req_u->peq_u->req_u = 0;
       c3_c* msg_c = "gateway timeout";
       h2o_send_error_generic(req_u->rec_u, 504, msg_c, msg_c, 0);
+//
+      if ( 0 != req_u->wsu_u ) {
+        _http_ws_detach_request(req_u);
+      }
+
+
     } break;
 
     case u3_rsat_ripe: {
@@ -855,9 +917,9 @@ _free_beam(beam* bem)
 /* _get_beam(): get a _beam from url
 */
 static beam
-_get_beam(u3_hreq* req_u, c3_c* txt_c, c3_w len_w)
+_get_beam(u3_hreq* req_u, c3_c* txt_c, c3_w len_w, c3_o* las_o)
 {
-  beam bem;
+  beam bem = {u3_none, u3_none, u3_none, u3_none};
 
   //  get beak
   //
@@ -899,7 +961,12 @@ _get_beam(u3_hreq* req_u, c3_c* txt_c, c3_w len_w)
         *wer = c3__base;
       }
       else {
-        req_u->peq_u->las_o = c3y;
+        *las_o = c3y;
+        // if you are seeing scries with the case %bad/6.578.530/6578530
+        // then this placeholder value is used somewhere even though it
+        // shouldn't be
+        //
+        *wer = c3__bad;
       }
       txt_c++;
       len_w--;
@@ -936,6 +1003,61 @@ _get_beam(u3_hreq* req_u, c3_c* txt_c, c3_w len_w)
   u3z(tmp);
 
   return bem;
+}
+
+/* _http_peek_dispatch(): dispatch peek request. RETAINS gang, spur, bem
+ * RETAINS req_u->peq_u and req_u->peq_u->pax if c3n is returned (no peek
+ * was queued), TRANSFERS them if c3y was returned
+*/
+static c3_o
+_http_peek_dispatch(u3_hreq* req_u, beam* bem_u, u3_noun gang, u3_noun spur)
+{
+  u3_http* htp_u = req_u->hon_u->htp_u;
+  u3_httd* htd_u = htp_u->htd_u;
+
+  if ( c3y == req_u->peq_u->las_o ) {
+    c3_o pro_o;
+    u3_noun our = u3dc("scot", 'p', u3_ship_to_noun(htd_u->car_u.pir_u->who_u));
+    if ( c3y == u3r_sing(our, bem_u->who) ) {
+      pro_o = c3y;
+      u3_pier_peek_last(htd_u->car_u.pir_u, u3k(gang), c3__ex,
+        u3k(bem_u->des), u3k(spur), req_u->peq_u, _http_scry_cb);
+    }
+    else {
+      pro_o = c3n;
+      c3_c* msg_c = "bad request";
+      h2o_send_error_generic(req_u->rec_u, 400, msg_c, msg_c, 0);
+    }
+    u3z(our);
+    return pro_o;
+  }
+  else {
+    c3_o pro_o;
+    u3_noun bam = u3nq(u3k(bem_u->who),
+      u3k(bem_u->des), u3k(bem_u->cas), u3k(spur));
+    c3_o auth_o = u3du(gang);
+    u3_noun key = u3nc(auth_o, u3k(bam));
+    u3_weak nac = u3h_get(htd_u->nax_p, key);
+    u3z(key);
+    
+    if (  (u3_none == nac)
+       || ((u3_nul == gang) && (c3y == u3r_at(14, nac))) )
+    {
+      u3z(req_u->peq_u->pax);
+      req_u->peq_u->pax = u3k(bam);
+      pro_o = c3y;
+      u3_pier_peek(htd_u->car_u.pir_u, u3k(gang), u3nt(0, c3__ex, u3k(bam)),
+        req_u->peq_u, _http_scry_cb);
+    }
+    else {
+      pro_o = c3n;
+      _http_scry_respond(req_u, u3k(nac));
+    }
+
+    u3z(bam);
+    u3z(nac);
+    return pro_o;
+  }
 }
 
 /* _http_req_dispatch(): dispatch http request. RETAINS `req`
@@ -975,27 +1097,8 @@ _http_req_dispatch(u3_hreq* req_u, u3_noun req)
       bas_c = bas_c + 4;  //  retain '/' after /_~_
       len_w = len_w - 4;
 
-      req_u->peq_u        = c3_malloc(sizeof(*req_u->peq_u));
-      req_u->peq_u->req_u = req_u;
-      req_u->peq_u->htd_u = htd_u;
-      req_u->peq_u->las_o = c3n;
-      req_u->sat_e = u3_rsat_peek;
-      req_u->peq_u->pax = u3_nul;
-
-      u3_hfig* fig_u = &req_u->hon_u->htp_u->htd_u->fig_u;
-      h2o_req_t* rec_u = req_u->rec_u;
-
-      //  set gang to [~ ~] or ~
-      u3_noun gang;
-      c3_o auth = _http_req_is_auth(fig_u, rec_u);
-      if ( auth == c3y ) {
-        gang = u3nc(u3_nul, u3_nul);
-      }
-      else {
-        gang = u3_nul;
-      }
-
-      beam bem = _get_beam(req_u, bas_c, len_w);
+      c3_o las_o = c3n;
+      beam bem = _get_beam(req_u, bas_c, len_w, &las_o);
       if (  (u3_none == bem.who)
          || (u3_none == bem.des)
          || (u3_none == bem.cas)
@@ -1003,12 +1106,25 @@ _http_req_dispatch(u3_hreq* req_u, u3_noun req)
       {
         c3_c* msg_c = "bad request";
         h2o_send_error_generic(req_u->rec_u, 400, msg_c, msg_c, 0);
-        u3z(gang);
-        u3z(req_u->peq_u->pax);
         _free_beam(&bem);
         return;
       }
 
+      req_u->peq_u    = c3_malloc(sizeof(*req_u->peq_u));
+
+      req_u->peq_u->req_u = req_u;
+      req_u->peq_u->htd_u = htd_u;
+      req_u->peq_u->las_o = las_o;
+      req_u->sat_e = u3_rsat_peek;
+      req_u->peq_u->pax = u3_nul;
+
+      u3_hfig* fig_u = &req_u->hon_u->htp_u->htd_u->fig_u;
+      h2o_req_t* rec_u = req_u->rec_u;
+
+      u3_noun gang = ( _(_http_req_is_auth(fig_u, rec_u)) )
+                   ? u3nc(u3_nul, u3_nul)
+                   : u3_nul;
+      
       h2o_headers_t req_headers = req_u->rec_u->headers;
       byte_range rng_u;
       c3_o rng_o = _get_range(req_headers, &rng_u);
@@ -1031,45 +1147,13 @@ _http_req_dispatch(u3_hreq* req_u, u3_noun req)
         spur = u3nq(u3i_string("range"), beg, end, u3k(bem.pur));
       }
 
-      // peek or respond from cache
-      //
-      if ( c3y == req_u->peq_u->las_o ) {
-        u3_noun our = u3dc("scot", 'p', u3_ship_to_noun(htd_u->car_u.pir_u->who_u));
-        if ( c3y == u3r_sing(our, bem.who) ) {
-          u3_pier_peek_last(htd_u->car_u.pir_u, gang, c3__ex,
-                            u3k(bem.des), spur, req_u->peq_u, _http_scry_cb);
-        }
-        else {
-          c3_c* msg_c = "bad request";
-          h2o_send_error_generic(req_u->rec_u, 400, msg_c, msg_c, 0);
-          u3z(gang);
-          u3z(spur);
-          u3z(req_u->peq_u->pax);
-        }
-        u3z(our);
+      if ( c3n == _http_peek_dispatch(req_u, &bem, gang, spur) ) {
+        u3z(req_u->peq_u->pax);
+        c3_free(req_u->peq_u);
+        req_u->peq_u = NULL;
       }
-      else {
-        u3_noun bam = u3nq(u3k(bem.who), u3k(bem.des), u3k(bem.cas), spur);
-        u3_noun key = u3nc(auth, u3k(bam));
-        u3_weak nac = u3h_get(htd_u->nax_p, key);
-        u3z(key);
-
-        if (  (u3_none == nac)
-           || ((u3_nul == gang) && (c3y == u3r_at(14, nac))) )
-        {
-          // maybe cache, then serve subsequent range requests from cache
-          u3z(req_u->peq_u->pax);
-          req_u->peq_u->pax = u3k(bam);
-          u3_pier_peek(htd_u->car_u.pir_u, gang, u3nt(0, c3__ex, bam),
-                       req_u->peq_u, _http_scry_cb);
-          u3z(nac);
-        }
-        else {
-          _http_scry_respond(req_u, nac);
-          u3z(bam);
-          u3z(gang);
-        }
-      }
+      u3z(gang);
+      u3z(spur);
       _free_beam(&bem);
     }
   }
@@ -1352,6 +1436,13 @@ _http_start_respond(u3_hreq* req_u,
                       (status < 500) ? "missing" :
                       "hosed";
 
+  h2o_iovec_t meth_u = req_u->rec_u->method;
+  c3_o emp_t = ( status < 200 )
+            || ( 204 == status )
+            || ( 205 == status )
+            || ( 304 == status )
+            || ( 0 == strncmp("HEAD", meth_u.base, meth_u.len) );
+
   u3_hhed* hed_u = _http_heds_from_noun(u3k(headers));
   u3_hhed* deh_u = hed_u;
 
@@ -1371,7 +1462,7 @@ _http_start_respond(u3_hreq* req_u,
     }
     else {
       h2o_add_header_by_str(&rec_u->pool, &rec_u->res.headers,
-                            hed_u->nam_c, hed_u->nam_w, 0, 0,
+                            hed_u->nam_c, hed_u->nam_w, 1, 0,
                             hed_u->val_c, hed_u->val_w);
     }
 
@@ -1382,9 +1473,12 @@ _http_start_respond(u3_hreq* req_u,
                                         _http_hgen_dispose);
   gen_u->neg_u = (h2o_generator_t){ _http_hgen_proceed, _http_hgen_stop };
   gen_u->red   = c3y;
-  gen_u->sat_e = ( c3y == complete ) ? u3_hgen_done : u3_hgen_wait;
-  gen_u->bod_u = ( u3_nul == data ) ?
-                 0 : _cttp_bod_from_octs(u3k(u3t(data)));
+  gen_u->sat_e = ( c3y == complete || emp_t ) ? u3_hgen_done : u3_hgen_wait;
+
+  gen_u->bod_u = ( u3_nul == data ) ? 0
+               : ( emp_t )          ? 0
+               : _cttp_bod_from_octs(u3k(u3t(data)));
+
   gen_u->nud_u = 0;
   gen_u->hed_u = deh_u;
   gen_u->req_u = req_u;
@@ -1418,9 +1512,14 @@ _http_continue_respond(u3_hreq* req_u,
     u3z(data); u3z(complete);
     return;
   }
-
+  
   u3_hgen* gen_u = req_u->gen_u;
-
+  
+  if ( u3_hgen_done == gen_u->sat_e ) {
+    u3z(data); u3z(complete);
+    return;
+  }
+  
   uv_timer_stop(req_u->tim_u);
 
   gen_u->sat_e = ( c3y == complete ) ? u3_hgen_done : u3_hgen_wait;
@@ -1463,6 +1562,13 @@ _http_cancel_respond(u3_hreq* req_u)
 
       c3_c* msg_c = "hosed";
       h2o_send_error_generic(req_u->rec_u, 500, msg_c, msg_c, 0);
+
+
+//
+      if ( 0 != req_u->wsu_u ) {
+        _http_ws_detach_request(req_u);
+      }
+
     } break;
 
     case u3_rsat_ripe: {
@@ -1667,8 +1773,54 @@ _http_rec_accept(h2o_handler_t* han_u, h2o_req_t* rec_u)
   }
   else {
     u3_hreq* req_u = _http_req_prepare(rec_u, _http_req_new);
-    if ( c3n == _http_req_cache(req_u) ) {
-      _http_req_dispatch(req_u, req);
+    //
+    // Out-param used by h2o’s websocket handshake checker.
+    // In practice it will point at the Sec-WebSocket-Key value when handshake is valid.
+    const c3_c* client_key = 0;
+
+    // Ask h2o: “is this request a websocket handshake?”
+    // Convention used here:
+    //   ws_rc == 0  => handshake is acceptable *if* client_key is populated
+    //   ws_rc < 0   => request *tried* to be websocket but is invalid/bad
+    //   ws_rc > 0   => not a websocket handshake (normal HTTP)
+    c3_i ws_rc = h2o_is_websocket_handshake(rec_u, &client_key);
+
+     // Valid websocket handshake path:
+    // ws_rc==0 means “yes/ok”, and client_key must be non-null to proceed.
+    if ( (0 == ws_rc) && (0 != client_key) ) {
+      // Start websocket handshake handling:
+      // - allocates/links a u3_hws session
+      // - marks req as “planned”
+      // - queues a %websocket-handshake ovum into %eyre
+      // - IMPORTANT: _http_ws_handshake() u3z()’s `req` internally (consumes it)
+      _http_ws_handshake(req_u, req, client_key);
+    }    
+    else {
+      // “websocket-ish but invalid” path:
+      if ( ws_rc < 0 ) {
+
+        // If a request timeout timer exists, stop it (we’re about to respond immediately).
+        if ( 0 != req_u->tim_u ) {
+          uv_timer_stop(req_u->tim_u);
+        }
+
+        // Mark request state “ripe” (i.e. done / ready to close out).
+        req_u->sat_e = u3_rsat_ripe;
+
+        // Log and respond 400.
+        u3l_log("http: invalid websocket handshake");
+        c3_c* msg_c = "bad websocket handshake";
+        h2o_send_error_generic(rec_u, 400, msg_c, msg_c, 0);
+
+        // Drop the noun request here because we are not dispatching it anywhere.
+        u3z(req);
+      }
+      // normal http path
+      else {
+        if ( c3n == _http_req_cache(req_u) ) {
+          _http_req_dispatch(req_u, req);
+        }
+      }
     }
   }
 
@@ -2148,6 +2300,17 @@ _http_serv_init_h2o(SSL_CTX* tls_u, c3_o log, c3_o red)
   h2o_u->cep_u.hosts = h2o_u->fig_u.hosts;
   h2o_u->cep_u.ssl_ctx = tls_u;
 
+  //  register compression filter first
+  //
+  {
+    h2o_compress_args_t com_u;
+    memset(&com_u, 0, sizeof(com_u));
+    com_u.min_size = 128;
+    com_u.gzip.quality = 6;
+    com_u.brotli.quality = 5;
+    h2o_compress_register(&h2o_u->hos_u->fallback_path, &com_u);
+  }
+
   h2o_u->han_u = h2o_create_handler(&h2o_u->hos_u->fallback_path,
                                     sizeof(*h2o_u->han_u));
   if ( c3y == red ) {
@@ -2190,7 +2353,7 @@ _http_serv_init_h2o(SSL_CTX* tls_u, c3_o log, c3_o red)
     {
       struct timeval tim_u;
       gettimeofday(&tim_u, 0);
-      now = u3_time_in_tv(&tim_u);
+      now = u3m_time_in_tv(&tim_u);
     }
     c3_c* pax_c = u3_Host.dir_c;
     u3_noun now = u3dc("scot", c3__da, now);
@@ -2211,8 +2374,6 @@ _http_serv_init_h2o(SSL_CTX* tls_u, c3_o log, c3_o red)
     u3z(now);
 #endif
   }
-
-  // XX h2o_compress_register
 
   h2o_context_init(&h2o_u->ctx_u, u3L, &h2o_u->fig_u);
 
@@ -2606,6 +2767,157 @@ _http_form_free(u3_httd* htd_u)
   htd_u->fig_u.for_u = 0;
 }
 
+
+/* _http_ws_accept(): accept websocket handshake.
+*/
+static void
+_http_ws_accept(u3_hws* web_u)
+{
+  if ( 0 == web_u || u3_hws_pending != web_u->sat_e ) {
+    return;
+  }
+
+  u3_hreq* req_u = web_u->req_u;
+  if ( 0 == req_u ) {
+    return;
+  }
+
+  if ( 0 != req_u->tim_u ) {
+    uv_timer_stop(req_u->tim_u);
+  }
+
+  req_u->sat_e = u3_rsat_ripe;
+
+  // u3l_log("http: ws accept wid=%u req=%p rec=%p", web_u->wid_l, (void*)req_u, (void*)req_u->rec_u);
+
+  //  guard against h2o freeing the request while we upgrade; if that happens,
+  //  _http_req_close() will no longer tear down the websocket session.
+  web_u->req_u = 0;
+
+  web_u->woc_u = h2o_upgrade_to_websocket(req_u->rec_u,
+                                          web_u->key_c,
+                                          web_u,
+                                          _http_ws_message_cb);
+
+  if ( 0 == web_u->woc_u ) {
+    c3_c* msg_c = "websocket upgrade failed";
+    h2o_send_error_generic(req_u->rec_u, 500, msg_c, msg_c, 0);
+    web_u->req_u = req_u;
+    req_u->wsu_u = 0;
+    web_u->sat_e = u3_hws_closed;
+    _http_ws_unlink(web_u);
+    c3_free(web_u);
+    return;
+  }
+
+  web_u->sat_e = u3_hws_open;
+  req_u->wsu_u = web_u;
+
+  // u3l_log("http: ws proceed scheduled wid=%u conn=%p", web_u->wid_l, (void*)web_u->woc_u);
+
+  /* h2o will invoke h2o_websocket_proceed() once the HTTP upgrade completes
+   * (see on_complete in lib/websocket.c). Calling it here would dereference a
+   * null sock before the upgrade is finalized.
+   */
+}
+
+/* _http_ws_reject(): reject websocket handshake.
+*/
+static void
+_http_ws_reject(u3_hws* web_u)
+{
+  if ( 0 == web_u || u3_hws_pending != web_u->sat_e ) {
+    return;
+  }
+
+  web_u->sat_e = u3_hws_closed;
+
+  if ( 0 != web_u->req_u ) {
+    u3_hreq* req_u = web_u->req_u;
+    if ( 0 != req_u->tim_u ) {
+      uv_timer_stop(req_u->tim_u);
+    }
+    req_u->sat_e = u3_rsat_ripe;
+    req_u->wsu_u = 0;
+
+    c3_c* msg_c = "websocket rejected";
+    h2o_send_error_generic(req_u->rec_u, 403, msg_c, msg_c, 0);
+  }
+
+  _http_ws_unlink(web_u);
+  c3_free(web_u);
+}
+
+/* _http_ws_send_message(): serialize and send websocket message to client.
+*/
+static c3_o
+_http_ws_send_message(u3_hws* web_u, u3_noun msg)
+{
+  if ( 0 == web_u || u3_hws_open != web_u->sat_e || 0 == web_u->woc_u ) {
+    u3z(msg);
+    return c3n;
+  }
+
+  u3_noun opcode = u3h(msg);
+  u3_noun body   = u3t(msg);
+
+  c3_w opc_w;
+  if ( c3n == u3r_safe_word(opcode, &opc_w) ) {
+    u3l_log("http: bad websocket opcode");
+    u3z(msg);
+    return c3n;
+  }
+
+  c3_y* buf_y = 0;
+  size_t len_w = 0;
+
+  if ( u3_nul != body ) {
+    if ( u3_nul != u3h(body) ) {
+      u3l_log("http: malformed websocket message body");
+      u3z(msg);
+      return c3n;
+    }
+
+    u3_noun oct = u3t(body);
+    c3_d len_d = u3r_chub(0, u3h(oct));
+    if ( len_d > SIZE_MAX ) {
+      u3l_log("http: websocket message too large");
+      u3z(msg);
+      return c3n;
+    }
+    len_w = (size_t)len_d;
+
+    if ( 0 != len_w ) {
+      buf_y = c3_malloc(len_w);
+      u3r_bytes(0, len_w, buf_y, u3t(oct));
+    }
+  }
+
+  struct wslay_event_msg out = {
+      .opcode = (uint8_t)(opc_w & 0xFF),
+      .msg = buf_y,
+      .msg_length = len_w,
+  };
+
+  int sas_i = wslay_event_queue_msg(web_u->woc_u->ws_ctx, &out);
+  if ( 0 != sas_i ) {
+    u3l_log("http: websocket queue failed (%d)", sas_i);
+    if ( buf_y ) {
+      c3_free(buf_y);
+    }
+    u3z(msg);
+    return c3n;
+  }
+
+  if ( buf_y ) {
+    c3_free(buf_y);
+  }
+
+  h2o_websocket_proceed(web_u->woc_u);
+  u3z(msg);
+  return c3y;
+}
+
 /* _http_auth_free(): free stored auth token state
 */
 static void
@@ -2702,6 +3014,7 @@ _http_io_talk(u3_auto* car_u)
   //
 }
 
+
 /* _http_ef_http_server(): dispatch an %http-server effect from %light.
 */
 void
@@ -2713,6 +3026,7 @@ _http_ef_http_server(u3_httd* htd_u,
                      u3_noun    dat)
 {
   u3_hreq* req_u;
+  u3_hws*  web_u;
 
   //  sets server configuration
   //
@@ -2730,11 +3044,57 @@ _http_ef_http_server(u3_httd* htd_u,
     u3_noun url = u3h(u3t(u3t(pax)));
     u3h_put(htd_u->sax_p, url, pax);
   }
+
+  else if ( c3y == u3r_sing_c("websocket-response", tag) ) {
+    u3_noun wid = u3k(u3h(dat));
+    u3_noun res = u3k(u3t(dat));
+
+    c3_w wid_w;
+    if ( c3n == u3r_safe_word(wid, &wid_w) ) {
+      u3l_log("http: invalid websocket id");
+    }
+    else if ( 0 == (web_u = _http_ws_find(htd_u, wid_w)) ) {
+      u3l_log("http: unknown websocket id %u", wid_w);
+    }
+    else {
+      u3_noun typ = u3h(res);
+
+      if ( c3y == u3r_sing_c("accept", typ) ) {
+        _http_ws_accept(web_u);
+      }
+      else if ( c3y == u3r_sing_c("reject", typ) ) {
+        _http_ws_reject(web_u);
+      }
+      else if ( c3y == u3r_sing_c("disconnect", typ) ) {
+        _http_ws_disconnect(web_u);
+      }
+      else if ( c3y == u3r_sing_c("message", typ) ) {
+        _http_ws_send_message(web_u, u3k(u3t(res)));
+      }
+      else {
+        u3l_log("http: unexpected websocket response");
+      }
+    }
+
+    u3z(wid);
+    u3z(res);
+  }
+
+  
   //  responds to an open request
   //
   else if ( 0 != (req_u = _http_search_req(htd_u, sev_l, coq_l, seq_l)) ) {
     if ( c3y == u3r_sing_c("response", tag) ) {
       u3_noun response = dat;
+
+      if ( 0 != req_u->wsu_u && (u3C.wag_w & u3o_verbose) ) {
+        u3l_log("http: ws pending got http response sev=%u coq=%u seq=%u wid=%u",
+                (c3_w)sev_l,
+                (c3_w)coq_l,
+                (c3_w)seq_l,
+                req_u->wsu_u->wid_l);
+      }
+      
 
       if ( c3y == u3r_sing_c("start", u3h(response)) ) {
         //  Separate the %start message into its components.
@@ -3173,7 +3533,7 @@ u3_http_io_init(u3_pier* pir_u)
     struct timeval tim_u;
     gettimeofday(&tim_u, 0);
 
-    now = u3_time_in_tv(&tim_u);
+    now = u3m_time_in_tv(&tim_u);
     htd_u->sev_l = u3r_mug(now);
     u3z(now);
   }
@@ -3183,4 +3543,255 @@ u3_http_io_init(u3_pier* pir_u)
   // car_u->ev.bail_f = ...;
 
   return car_u;
+}
+/* _http_ws_link(): link websocket session to device list.
+*/
+static void
+_http_ws_link(u3_httd* htd_u, u3_hws* web_u)
+{
+  web_u->htd_u = htd_u;
+  web_u->nex_u = htd_u->web_u;
+  web_u->pre_u = 0;
+
+  if ( 0 != web_u->nex_u ) {
+    web_u->nex_u->pre_u = web_u;
+  }
+  htd_u->web_u = web_u;
+}
+
+/* _http_ws_unlink(): unlink websocket session from device list.
+*/
+static void
+_http_ws_unlink(u3_hws* web_u)
+{
+  if ( 0 != web_u->pre_u ) {
+    web_u->pre_u->nex_u = web_u->nex_u;
+
+    if ( 0 != web_u->nex_u ) {
+      web_u->nex_u->pre_u = web_u->pre_u;
+    }
+  }
+  else if ( web_u->htd_u->web_u == web_u ) {
+    web_u->htd_u->web_u = web_u->nex_u;
+
+    if ( 0 != web_u->nex_u ) {
+      web_u->nex_u->pre_u = 0;
+    }
+  }
+
+  web_u->nex_u = 0;
+  web_u->pre_u = 0;
+}
+
+/* _http_ws_find(): locate websocket session by id.
+*/
+static u3_hws*
+_http_ws_find(u3_httd* htd_u, c3_w wid_l)
+{
+  u3_hws* web_u = htd_u->web_u;
+
+  while ( 0 != web_u ) {
+    if ( wid_l == web_u->wid_l ) {
+      return web_u;
+    }
+    web_u = web_u->nex_u;
+  }
+
+  return 0;
+}
+
+/* _http_ws_to_duct(): rebuild duct for websocket session.
+*/
+static u3_noun
+_http_ws_to_duct(u3_hws* web_u)
+{
+  return u3nc(u3i_string("http-server"),
+              u3nq(u3dc("scot", c3__uv, web_u->sev_l),
+                   u3dc("scot", c3__ud, web_u->coq_l),
+                   u3dc("scot", c3__ud, web_u->seq_l),
+                   u3_nul));
+}
+
+/* _http_ws_plan_event(): queue websocket event for eyre.
+*/
+static void
+_http_ws_plan_event(u3_hws* web_u, u3_noun event)
+{
+  u3_noun wir = _http_ws_to_duct(web_u);
+  u3_noun pay = u3nc(u3i_chub((c3_d)web_u->wid_l), event);
+  u3_noun cad = u3nc(u3i_string("websocket-event"), pay);
+
+  // u3l_log("http: ws emit wid=%u event=%s", web_u->wid_l, u3r_string(u3h(cad)));
+
+  u3_auto_plan(&web_u->htd_u->car_u, u3_ovum_init(0, c3__e, wir, cad));
+}
+
+/* _http_ws_close_all(): close all active websocket sessions.
+*/
+static void
+_http_ws_close_all(u3_httd* htd_u)
+{
+  u3_hws* web_u = htd_u->web_u;
+
+  while ( 0 != web_u ) {
+    u3_hws* nex_u = web_u->nex_u;
+    _http_ws_disconnect(web_u);
+    web_u = nex_u;
+  }
+}
+
+/* _http_ws_detach_request(): release websocket session tied to request (if pending).
+*/
+static void
+_http_ws_detach_request(u3_hreq* req_u)
+{
+  if ( 0 == req_u->wsu_u ) {
+    return;
+  }
+
+  u3_hws* web_u = req_u->wsu_u;
+  req_u->wsu_u = 0;
+
+  if ( 0 != web_u->req_u && web_u->req_u == req_u ) {
+    web_u->req_u = 0;
+    web_u->sat_e = u3_hws_closed;
+    _http_ws_unlink(web_u);
+    c3_free(web_u);
+  }
+}
+
+/* _http_ws_handshake(): handle websocket handshake request.
+*/
+static void
+_http_ws_handshake(u3_hreq* req_u, u3_noun req, const c3_c* client_key)
+{
+  //  capture the owning HTTP server/device so we can reuse shared state
+  //
+  u3_http* htp_u = req_u->hon_u->htp_u;
+  u3_httd* htd_u = htp_u->htd_u;
+
+  //  websocket ids start at 1; initialize the counter lazily
+  //
+  if ( 0 == htd_u->wid_l ) {
+    htd_u->wid_l = 1;
+  }
+
+  //  allocate a websocket session, mark it pending, and record the
+  //  identifiers needed to upgrade/respond later (server/connection/request)
+  //
+  u3_hws* web_u = c3_calloc(sizeof(*web_u));
+  web_u->sat_e = u3_hws_pending;
+  web_u->wid_l = htd_u->wid_l++;
+  web_u->sev_l = htp_u->sev_l;
+  web_u->coq_l = req_u->hon_u->coq_l;
+  web_u->seq_l = req_u->seq_l;
+  web_u->req_u = req_u;
+  web_u->woc_u = 0;
+
+  //  stash the Sec-WebSocket-Key so h2o can finalize the upgrade later
+  //
+  ssize_t key_index = h2o_find_header_by_str(&req_u->rec_u->headers,
+                                             H2O_STRLIT("sec-websocket-key"), -1);
+  size_t key_len = ( -1 != key_index )
+                     ? req_u->rec_u->headers.entries[key_index].value.len
+                     : 0;
+  if ( key_len >= sizeof(web_u->key_c) ) {
+    key_len = sizeof(web_u->key_c) - 1;
+  }
+  memcpy(web_u->key_c, client_key, key_len);
+  web_u->key_c[key_len] = 0;
+
+  //  link the session into the device list and note the pending plan on req
+  //
+  _http_ws_link(htd_u, web_u);
+  req_u->wsu_u = web_u;
+  req_u->sat_e = u3_rsat_plan;
+
+  //  build the `%http-server` duct: ["http-server" uv-id conn-id req-id]
+  //
+  u3_noun wir = _http_req_to_duct(req_u);
+  //  peer IPv4 as `[c3__ipv4 (atom ip-address)]`
+  //
+  c3_w ipf_w = req_u->hon_u->ipf_w;
+  u3_noun adr = u3nc(c3__ipv4, u3i_words(1, &ipf_w));
+  //
+  u3_noun dat = u3nt(htp_u->sec, adr, u3k(req));
+  //
+  u3_noun pay = u3nc(u3i_chub((c3_d)web_u->wid_l), dat);
+  //  final ovum: ["websocket-handshake" pay], i.e. [%websocket-handshake websocket-id=@ secure=? =address:eyre =request:http]
+  //
+  u3_noun cad = u3nc(u3i_string("websocket-handshake"), pay);
+
+  //  enqueue the ovum for %eyre and drop the temporary request noun
+  //
+  u3_auto_plan(&htd_u->car_u, u3_ovum_init(0, c3__e, wir, cad));
+
+}
+
+/* _http_ws_disconnect(): close websocket connection.
+*/
+static void
+_http_ws_disconnect(u3_hws* web_u)
+{
+  if ( 0 == web_u ) {
+    return;
+  }
+
+  if ( u3_hws_pending == web_u->sat_e ) {
+    _http_ws_reject(web_u);
+    return;
+  }
+
+  if ( (u3_hws_open == web_u->sat_e) && (0 != web_u->woc_u) ) {
+    web_u->sat_e = u3_hws_closing;
+    h2o_websocket_close(web_u->woc_u);
+  }
+}
+
+
+/* _http_ws_message_cb(): websocket receive / close callback.
+*/
+static void
+_http_ws_message_cb(h2o_websocket_conn_t *conn,
+                    const struct wslay_event_on_msg_recv_arg *arg)
+{
+  u3_hws* web_u = (u3_hws*)conn->data;
+
+  if ( 0 == web_u ) {
+    return;
+  }
+
+  if ( NULL == arg ) {
+    if ( u3_hws_closed != web_u->sat_e ) {
+      web_u->sat_e = u3_hws_closed;
+      _http_ws_plan_event(web_u, u3nc(u3i_string("disconnect"), u3_nul));
+    }
+
+    _http_ws_unlink(web_u);
+    c3_free(web_u);
+    return;
+  }
+
+  if ( WSLAY_CONNECTION_CLOSE == arg->opcode ) {
+    if ( u3_hws_closed != web_u->sat_e ) {
+      web_u->sat_e = u3_hws_closed;
+      _http_ws_plan_event(web_u, u3nc(u3i_string("disconnect"), u3_nul));
+    }
+    return;
+  }
+
+  u3_noun payload;
+  if ( 0 == arg->msg_length ) {
+    payload = u3_nul;
+  }
+  else {
+    u3_noun octs = u3nc(u3i_chub((c3_d)arg->msg_length),
+                        u3i_bytes(arg->msg_length, (const c3_y*)arg->msg));
+    payload = u3nc(u3_nul, octs);
+  }
+
+  u3_noun event = u3nc(u3i_string("message"),
+                       u3nc(u3i_chub((c3_d)arg->opcode), payload));
+
+  _http_ws_plan_event(web_u, event);
 }

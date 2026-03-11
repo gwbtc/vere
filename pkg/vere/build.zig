@@ -7,16 +7,12 @@ pub fn build(b: *std.Build) !void {
 
     const copts: []const []const u8 =
         b.option([]const []const u8, "copt", "") orelse &.{};
-    const pace = b.option([]const u8, "pace", "") orelse  "live";
-        // @panic("Missing required option: pace");
-    const version = b.option([]const u8, "version", "") orelse  "3.5";
-        // @panic("Missing required option: version");
+    const pace = b.option([]const u8, "pace", "") orelse "live";
+    // @panic("Missing required option: pace");
+    const version = b.option([]const u8, "version", "") orelse "3.5";
+    // @panic("Missing required option: version");
 
-    const pkg_vere = b.addStaticLibrary(.{
-        .name = "vere",
-        .target = target,
-        .optimize = optimize,
-    });
+    const pkg_vere = b.addLibrary(.{ .name = "vere", .root_module = b.createModule(.{ .target = target, .optimize = optimize }) });
 
     if (target.result.os.tag.isDarwin() and !target.query.isNative()) {
         const macos_sdk = b.lazyDependency("macos_sdk", .{
@@ -79,6 +75,10 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    const wslay = b.dependency("wslay", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const libuv = b.dependency("libuv", .{
         .target = target,
@@ -111,7 +111,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     const pace_h = b.addWriteFile("pace.h", blk: {
-        var output = std.ArrayList(u8).init(b.allocator);
+        var output = std.array_list.Managed(u8).init(b.allocator);
         defer output.deinit();
 
         try output.appendSlice(b.fmt(
@@ -126,7 +126,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     const version_h = b.addWriteFile("version.h", blk: {
-        var output = std.ArrayList(u8).init(b.allocator);
+        var output = std.array_list.Managed(u8).init(b.allocator);
         defer output.deinit();
 
         try output.appendSlice(b.fmt(
@@ -145,6 +145,7 @@ pub fn build(b: *std.Build) !void {
     pkg_vere.addIncludePath(b.path(""));
     pkg_vere.addIncludePath(b.path("ivory"));
     pkg_vere.addIncludePath(b.path("ca_bundle"));
+    pkg_vere.addIncludePath(wslay.path("lib/includes"));
 
     if (t.os.tag == .linux) {
         pkg_vere.linkLibrary(avahi.artifact("dns-sd"));
@@ -155,6 +156,7 @@ pub fn build(b: *std.Build) !void {
     pkg_vere.linkLibrary(gmp.artifact("gmp"));
 
     pkg_vere.linkLibrary(h2o.artifact("h2o"));
+    pkg_vere.linkLibrary(wslay.artifact("wslay"));
     pkg_vere.linkLibrary(libuv.artifact("libuv"));
     pkg_vere.linkLibrary(lmdb.artifact("lmdb"));
     pkg_vere.linkLibrary(openssl.artifact("ssl"));
@@ -167,7 +169,14 @@ pub fn build(b: *std.Build) !void {
     pkg_vere.linkLibrary(pkg_past.artifact("past"));
     pkg_vere.linkLibC();
 
-    var files = std.ArrayList([]const u8).init(b.allocator);
+        //
+    const wslay_version = "1.1.1";
+    const wslay_version_define =
+        std.fmt.comptimePrint("-DWSLAY_VERSION=\"{s}\"", .{wslay_version});
+    // 
+
+
+    var files = std.array_list.Managed([]const u8).init(b.allocator);
     defer files.deinit();
     try files.appendSlice(&c_source_files);
     if (t.os.tag == .macos) {
@@ -193,10 +202,11 @@ pub fn build(b: *std.Build) !void {
         });
     }
 
-    var flags = std.ArrayList([]const u8).init(b.allocator);
+    var flags = std.array_list.Managed([]const u8).init(b.allocator);
     defer flags.deinit();
     try flags.appendSlice(&.{
         "-std=gnu23",
+        wslay_version_define
     });
     try flags.appendSlice(copts);
 
@@ -247,7 +257,6 @@ const c_source_files = [_][]const u8{
     "melt.c",
     "newt.c",
     "pier.c",
-    "time.c",
     "ward.c",
 };
 

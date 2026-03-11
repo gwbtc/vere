@@ -35,15 +35,19 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    const wslay = b.dependency("wslay", .{
+        .target = target,
+        .optimize = optimize
+    });
+
     const sse2neon_c = b.dependency("sse2neon", .{
         .target = target,
         .optimize = optimize,
     });
 
-    const cloexec = b.addStaticLibrary(.{
+    const cloexec = b.addLibrary(.{
         .name = "cloexec",
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
 
     cloexec.linkLibC();
@@ -64,10 +68,9 @@ pub fn build(b: *std.Build) !void {
 
     cloexec.installHeader(h2o_c.path("deps/cloexec/cloexec.h"), "cloexec.h");
 
-    const klib = b.addStaticLibrary(.{
+    const klib = b.addLibrary(.{
         .name = "klib",
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
 
     klib.linkLibrary(curl.artifact("curl"));
@@ -118,10 +121,9 @@ pub fn build(b: *std.Build) !void {
         .include_extensions = &.{".h"},
     });
 
-    const libgkc = b.addStaticLibrary(.{
+    const libgkc = b.addLibrary(.{
         .name = "libgkc",
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
 
     libgkc.linkLibC();
@@ -138,10 +140,9 @@ pub fn build(b: *std.Build) !void {
 
     libgkc.installHeader(h2o_c.path("deps/libgkc/gkc.h"), "gkc.h");
 
-    const libyrmcds = b.addStaticLibrary(.{
+    const libyrmcds = b.addLibrary(.{
         .name = "libyrmcds",
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
 
     libyrmcds.linkLibC();
@@ -177,10 +178,9 @@ pub fn build(b: *std.Build) !void {
         .include_extensions = &.{".h"},
     });
 
-    const picohttpparser = b.addStaticLibrary(.{
+    const picohttpparser = b.addLibrary(.{
         .name = "picohttpparser",
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
 
     picohttpparser.linkLibC();
@@ -205,10 +205,9 @@ pub fn build(b: *std.Build) !void {
         .include_extensions = &.{".h"},
     });
 
-    const cifra = b.addStaticLibrary(.{
+    const cifra = b.addLibrary(.{
         .name = "cifra",
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
 
     cifra.linkLibC();
@@ -253,10 +252,9 @@ pub fn build(b: *std.Build) !void {
         .include_extensions = &.{ ".h", "curve25519.tweetnacl.c" },
     });
 
-    const micro_ecc = b.addStaticLibrary(.{
+    const micro_ecc = b.addLibrary(.{
         .name = "micro_ecc",
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
 
     micro_ecc.linkLibC();
@@ -272,10 +270,9 @@ pub fn build(b: *std.Build) !void {
         .include_extensions = &.{ ".h", ".inc" },
     });
 
-    const picotls = b.addStaticLibrary(.{
+    const picotls = b.addLibrary(.{
         .name = "picotls",
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
 
     picotls.linkLibrary(openssl.artifact("ssl"));
@@ -330,10 +327,9 @@ pub fn build(b: *std.Build) !void {
 
     // ssl_conservatory.installHeader(h2o_c.path("deps/ssl-conservatory/openssl/openssl_hostname_validation.h"), "openssl_hostname_validation.h");
 
-    const h2o = b.addStaticLibrary(.{
+    const h2o = b.addLibrary(.{
         .name = "h2o",
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{ .target = target, .optimize = optimize }),
     });
 
     h2o.linkLibrary(openssl.artifact("ssl"));
@@ -346,6 +342,7 @@ pub fn build(b: *std.Build) !void {
     // h2o.linkLibrary(libyrmcds);
     h2o.linkLibrary(picohttpparser);
     h2o.linkLibrary(picotls);
+    h2o.linkLibrary(wslay.artifact("wslay"));
     // h2o.linkLibrary(ssl_conservatory);
     h2o.linkLibC();
 
@@ -437,6 +434,7 @@ pub fn build(b: *std.Build) !void {
             "http2/http2_debug_state.c",
             "http2/scheduler.c",
             "http2/stream.c",
+            "websocket.c",
             "tunnel.c",
         },
         .flags = &.{
@@ -447,6 +445,7 @@ pub fn build(b: *std.Build) !void {
             "-pthread",
             "-DH2O_USE_LIBUV",
             "-DH2O_USE_PICOTLS",
+            "-DWSLAY_VERSION=\\\"1.1.1\\\"",
             if (t.os.tag == .linux) "-D_GNU_SOURCE" else "",
         },
     });
