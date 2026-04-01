@@ -81,6 +81,7 @@ jobs:
           if [[ "${{ inputs.pace }}" == "live" ]]; then
             zig build                  \
               -Dall                    \
+              -Dunsafe-dawn=true       \
               -Drelease                \
               --summary all
           else
@@ -88,6 +89,7 @@ jobs:
               -Dall                    \
               -Doptimize=ReleaseFast   \
               -Dpace=${{inputs.pace}}  \
+              -Dunsafe-dawn=true       \
               --summary all
           fi
       - name: Run unit tests
@@ -103,6 +105,7 @@ jobs:
             benchmarks                 \
             -Doptimize=ReleaseFast     \
             -Dpace=${{inputs.pace}}    \
+            -Dunsafe-dawn=true         \
             --summary all
 
       - name: Build test binary
@@ -111,6 +114,7 @@ jobs:
           zig build                    \
             -Doptimize=ReleaseFast     \
             -Dpace=${{inputs.pace}}    \
+            -Dunsafe-dawn=true         \
             -Dbinary-name=urbit-test   \
             -Dcpu-dbg                  \
             -Dmem-dbg                  \

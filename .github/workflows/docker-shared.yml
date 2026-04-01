@@ -31,6 +31,7 @@ jobs:
             -Dtarget=x86_64-linux-musl \
             -Doptimize=ReleaseFast     \
             -Dpace=${{inputs.pace}}    \
+            -Dunsafe-dawn=true         \
             --summary all
 
           cp zig-out/x86_64-linux-musl/urbit docker/.
