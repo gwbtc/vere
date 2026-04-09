@@ -5,18 +5,31 @@
 #include "allocate.h"
 #include "hashtable.h"
 #include "imprison.h"
+#include "intern.h"
 #include "jets/k.h"
 #include "jets/q.h"
 #include "log.h"
 #include "manage.h"
+#include "meta.h"
 #include "nock.h"
 #include "options.h"
 #include "retrieve.h"
 #include "serial.h"
+#include "stencil.h"
 #include "trace.h"
 #include "urcrypt.h"
 #include "vortex.h"
 #include "xtract.h"
+
+//  Feature flag for stencil-based dispatch
+//  Set to 1 to enable stencil-based jet dispatch
+//  Extended cells now use marker-based detection (0x80000000 in mug_w)
+#define USE_STENCIL_DISPATCH 1
+
+//  Forward declarations for stencil dispatch
+#if USE_STENCIL_DISPATCH
+static void _cj_stencil_boot(void);
+#endif
 
 
 /**  Functions.
@@ -817,11 +830,111 @@ u3j_boot(c3_o nuu_o)
   }
   u3R->jed.hot_p = u3h_new();
 
+#if USE_STENCIL_DISPATCH
+  //  Build kernel tree for stencil-based dispatch
+  _cj_stencil_boot();
+#endif
+
   return _cj_install(u3D.ray_u, 1,
                      (c3_l) (long long) u3D.dev_u[0].par_u,
                      u3_nul,
                      u3D.dev_u);
 }
+
+#if USE_STENCIL_DISPATCH
+/* _cj_kernel_from_core(): build kernel tree from u3j_core definitions.
+ *
+ * Recursively converts the existing jet dashboard structure into
+ * the new kernel/stencil system.
+ */
+static void
+_cj_kernel_from_core(u3m_kernel* par_u, u3j_core* cop_u)
+{
+  c3_w i_w;
+
+  //  Install child kernel
+  u3m_kernel* ker_u = u3m_child_install(par_u, cop_u->cos_c,
+                                         u3i_word(cop_u->axe_l));
+
+  //  Install arms
+  if ( cop_u->arm_u ) {
+    for ( i_w = 0; 0 != cop_u->arm_u[i_w].fcs_c; i_w++ ) {
+      u3j_harm* ham_u = &cop_u->arm_u[i_w];
+      if ( ham_u->fun_f ) {
+        u3m_arm_install(ker_u, u3i_word(ham_u->axe_l), ham_u->fun_f);
+      }
+    }
+  }
+
+  //  Install hooks
+  if ( cop_u->huc_u ) {
+    for ( i_w = 0; 0 != cop_u->huc_u[i_w].nam_c; i_w++ ) {
+      u3j_hood* huc_u = &cop_u->huc_u[i_w];
+      u3m_hook_install(ker_u, huc_u->nam_c, u3i_word(huc_u->axe_l));
+    }
+  }
+
+  //  Recurse for children
+  if ( cop_u->dev_u ) {
+    for ( i_w = 0; 0 != cop_u->dev_u[i_w].cos_c; i_w++ ) {
+      _cj_kernel_from_core(ker_u, &cop_u->dev_u[i_w]);
+    }
+  }
+}
+
+/* _cj_stencil_boot(): initialize stencil system from jet dashboard.
+ *
+ * Builds the kernel tree from existing u3j_core definitions.
+ */
+static void
+_cj_stencil_boot(void)
+{
+  c3_w i_w;
+
+  //  Initialize stencil system
+  u3m_stencil_init();
+
+  //  Build kernel tree from dashboard
+  //  Root kernels are identified by having no parent (axe_l == 0)
+  for ( i_w = 0; 0 != u3D.dev_u[i_w].cos_c; i_w++ ) {
+    u3j_core* cop_u = &u3D.dev_u[i_w];
+
+    //  Find kelvin from parent pointer encoding
+    //  (The parent pointer for root cores encodes the kelvin)
+    u3_atom kel = u3i_word((c3_l)(long long)cop_u->par_u);
+
+    u3m_kernel* ker_u = u3m_root_install(cop_u->cos_c, kel);
+
+    //  Install arms for root kernel
+    if ( cop_u->arm_u ) {
+      c3_w j_w;
+      for ( j_w = 0; 0 != cop_u->arm_u[j_w].fcs_c; j_w++ ) {
+        u3j_harm* ham_u = &cop_u->arm_u[j_w];
+        if ( ham_u->fun_f ) {
+          u3m_arm_install(ker_u, u3i_word(ham_u->axe_l), ham_u->fun_f);
+        }
+      }
+    }
+
+    //  Install hooks for root kernel
+    if ( cop_u->huc_u ) {
+      c3_w j_w;
+      for ( j_w = 0; 0 != cop_u->huc_u[j_w].nam_c; j_w++ ) {
+        u3j_hood* huc_u = &cop_u->huc_u[j_w];
+        u3m_hook_install(ker_u, huc_u->nam_c, u3i_word(huc_u->axe_l));
+      }
+    }
+
+    //  Recurse for children
+    if ( cop_u->dev_u ) {
+      c3_w j_w;
+      for ( j_w = 0; 0 != cop_u->dev_u[j_w].cos_c; j_w++ ) {
+        _cj_kernel_from_core(ker_u, &cop_u->dev_u[j_w]);
+      }
+    }
+  }
+}
+#endif /* USE_STENCIL_DISPATCH */
 
 /* _cj_soft(): kick softly by arm axis.
 */
@@ -1240,6 +1353,17 @@ _cj_sink(u3_noun cor, u3_noun axe)
 u3_weak
 u3j_kick(u3_noun cor, u3_noun axe)
 {
+#if USE_STENCIL_DISPATCH
+  //  Try stencil-based dispatch first (O(1) for static cores)
+  {
+    u3_weak pro = u3m_kick(cor, axe);
+    if ( u3_none != pro ) {
+      u3z(cor);  //  kick transfers ownership
+      return pro;
+    }
+  }
+#endif
+
   u3t_on(glu_o);
   u3_weak loc = _cj_spot(cor, NULL);
   if ( u3_none == loc ) {
@@ -1955,6 +2079,12 @@ void
 u3j_mine(u3_noun clu, u3_noun cor)
 {
   u3_weak loc;
+
+#if USE_STENCIL_DISPATCH
+  //  Also register with stencil system
+  u3m_mine(u3k(clu), u3k(cor));
+#endif
+
   u3t_on(glu_o);
   loc = _cj_mile(clu, cor);
   u3z(loc);

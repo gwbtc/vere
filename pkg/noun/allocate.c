@@ -3,6 +3,7 @@
 #include "allocate.h"
 
 #include "hashtable.h"
+#include "meta.h"
 #include "log.h"
 #include "manage.h"
 #include "options.h"
@@ -13,6 +14,7 @@
 #include "palloc.c"
 
 u3_road* u3a_Road;
+u3_road* u3a_Junior;
 u3a_mark u3a_Mark;
 u3a_gack u3a_Gack;
 u3a_hunk_dose u3a_Hunk[u3a_crag_no];
@@ -470,22 +472,24 @@ u3a_wash(u3_noun som)
   }
 }
 
-/* _me_gain_use(): increment use count.
+/* _me_gain_use(): increment use count, preserving intern bit.
 */
 static void
 _me_gain_use(u3_noun dog)
 {
   u3a_noun* box_u = u3a_to_ptr(dog);
+  c3_w use_w = box_u->use_w & ~u3a_intern_bit;
+  c3_w int_w = box_u->use_w & u3a_intern_bit;
 
-  if ( 0x7fffffff == box_u->use_w ) {
+  if ( 0x7fffffff == use_w ) {
     u3l_log("fail in _me_gain_use");
     u3m_bail(c3__fail);
   }
   else {
-    if ( box_u->use_w == 0 ) {
+    if ( use_w == 0 ) {
       u3m_bail(c3__foul);
     }
-    box_u->use_w += 1;
+    box_u->use_w = (use_w + 1) | int_w;
 
 #ifdef U3_MEMORY_DEBUG
     //  enable to (maybe) help track down leaks
@@ -536,14 +540,51 @@ _ca_take_atom(u3a_atom* old_u)
 }
 
 /* _ca_take_cell(): reallocate a cell off the stack.
+**  Preserves intern bit from old cell's refcount.
 */
 static inline u3_cell
 _ca_take_cell(u3a_cell* old_u, u3_noun hed, u3_noun tel)
 {
-  c3_w*     new_w = u3a_celloc();
-  u3a_cell* new_u = (u3a_cell*)(void *)new_w;
-  u3_cell     new = u3a_to_pom(u3a_outa(new_u));
+  c3_w*     new_w;
+  u3a_cell* new_u;
+  u3_cell   new;
+  c3_w      int_w = old_u->use_w & u3a_intern_bit;  //  preserve intern bit
 
+  //  Check if old cell is extended (has metadata)
+  //  Use marker in mug_w to detect extended cells
+  //
+  if ( u3m_meta_marker == old_u->mug_w ) {
+    //  Extended cell - allocate with same size
+    new_w = u3a_walloc(u3a_cell_x_words);
+    new_u = (u3a_cell*)(void *)new_w;
+    new   = u3a_to_pom(u3a_outa(new_u));
+
+    //  Copy the extended structure with proper take of metadata
+    u3a_cell_x* old_x = (u3a_cell_x*)old_u;
+    u3a_cell_x* new_x = (u3a_cell_x*)new_u;
+
+    new_x->use_w = 1 | int_w;  //  preserve intern bit
+    new_x->mug_w = u3m_meta_marker;  //  preserve marker
+    new_x->hed   = hed;
+    new_x->tel   = tel;
+
+    //  Take metadata (promotes junior allocations to current road)
+    u3m_meta_take(&new_x->met_u, &old_x->met_u);
+
+    goto done;
+  }
+
+  //  Standard cell
+  new_w = u3a_celloc();
+  new_u = (u3a_cell*)(void *)new_w;
+  new   = u3a_to_pom(u3a_outa(new_u));
+
+  new_u->use_w = 1 | int_w;  //  preserve intern bit
+  new_u->mug_w = old_u->mug_w;
+  new_u->hed   = hed;
+  new_u->tel   = tel;
+
+done:
 #ifdef VERBOSE_TAKE
   u3l_log("%s: cell %p to %p", ( c3y == u3a_is_north(u3R) )
                                    ? "north"
@@ -552,14 +593,16 @@ _ca_take_cell(u3a_cell* old_u, u3_noun hed, u3_noun tel)
                                    new_u);
 #endif
 
-  new_u->use_w = 1;
-  new_u->mug_w = old_u->mug_w;
-  new_u->hed   = hed;
-  new_u->tel   = tel;
-
   //  borrow mug slot to record new destination in [old_u]
+  //  For extended cells, use metadata mug slot to preserve the marker
   //
-  old_u->mug_w = new;
+  if ( u3m_meta_marker == old_u->mug_w ) {
+    u3a_cell_x* old_x = (u3a_cell_x*)old_u;
+    old_x->met_u.mug_w = new;
+  }
+  else {
+    old_u->mug_w = new;
+  }
 
   return new;
 }
@@ -598,9 +641,19 @@ _ca_take_next_north(u3a_pile* pil_u, u3_noun veb)
       u3a_noun* veb_u = u3a_to_ptr(veb);
 
       //  32-bit mug_w: already copied [veb] and [mug_w] is the new ref.
+      //  For extended cells, forwarding pointer is in met_u.mug_w.
       //
-      if ( veb_u->mug_w >> 31 ) {
-        u3_noun nov = (u3_noun)veb_u->mug_w;
+      c3_w mug_w;
+      if ( u3m_meta_marker == veb_u->mug_w ) {
+        mug_w = ((u3a_cell_x*)veb_u)->met_u.mug_w;
+      }
+      else {
+        mug_w = veb_u->mug_w;
+      }
+
+      if ( mug_w >> 31 ) {
+        //  Already forwarded
+        u3_noun nov = (u3_noun)mug_w;
 
         u3_assert( c3y == u3a_north_is_normal(u3R, nov) );
 
@@ -608,10 +661,11 @@ _ca_take_next_north(u3a_pile* pil_u, u3_noun veb)
         u3l_log("north: %p is already %p", veb_u, u3a_to_ptr(nov));
 #endif
 
-        _me_gain_use(nov); // bypass branches in u3k()
+        _me_gain_use(nov);
         return nov;
       }
-      else if ( c3y == u3a_is_atom(veb) ) {
+
+      if ( c3y == u3a_is_atom(veb) ) {
         return _ca_take_atom((u3a_atom*)veb_u);
       }
       else {
@@ -653,9 +707,19 @@ _ca_take_next_south(u3a_pile* pil_u, u3_noun veb)
       u3a_noun* veb_u = u3a_to_ptr(veb);
 
       //  32-bit mug_w: already copied [veb] and [mug_w] is the new ref.
+      //  For extended cells, forwarding pointer is in met_u.mug_w.
       //
-      if ( veb_u->mug_w >> 31 ) {
-        u3_noun nov = (u3_noun)veb_u->mug_w;
+      c3_w mug_w;
+      if ( u3m_meta_marker == veb_u->mug_w ) {
+        mug_w = ((u3a_cell_x*)veb_u)->met_u.mug_w;
+      }
+      else {
+        mug_w = veb_u->mug_w;
+      }
+
+      if ( mug_w >> 31 ) {
+        //  Already forwarded
+        u3_noun nov = (u3_noun)mug_w;
 
         u3_assert( c3y == u3a_south_is_normal(u3R, nov) );
 
@@ -663,10 +727,11 @@ _ca_take_next_south(u3a_pile* pil_u, u3_noun veb)
         u3l_log("south: %p is already %p", veb_u, u3a_to_ptr(nov));
 #endif
 
-        _me_gain_use(nov); // bypass branches in u3k()
+        _me_gain_use(nov);
         return nov;
       }
-      else if ( c3y == u3a_is_atom(veb) ) {
+
+      if ( c3y == u3a_is_atom(veb) ) {
         return _ca_take_atom((u3a_atom*)veb_u);
       }
       else {
@@ -843,7 +908,7 @@ _me_gain_south(u3_noun dog)
   }
 }
 
-/* _me_lose_north(): lose on a north road.
+/* _me_lose_north(): lose on a north road, preserving intern bit.
 */
 static void
 _me_lose_north(u3_noun dog)
@@ -851,12 +916,14 @@ _me_lose_north(u3_noun dog)
 top:
   if ( c3y == u3a_north_is_normal(u3R, dog) ) {
     u3a_noun* box_u = u3a_to_ptr(dog);
+    c3_w use_w = box_u->use_w & ~u3a_intern_bit;
+    c3_w int_w = box_u->use_w & u3a_intern_bit;
 
-    if ( box_u->use_w > 1 ) {
-      box_u->use_w -= 1;
+    if ( use_w > 1 ) {
+      box_u->use_w = (use_w - 1) | int_w;
     }
     else {
-      if ( 0 == box_u->use_w ) {
+      if ( 0 == use_w ) {
         u3m_bail(c3__foul);
       }
       else {
@@ -868,7 +935,13 @@ top:
           if ( !_(u3a_is_cat(h_dog)) ) {
             _me_lose_north(h_dog);
           }
-          u3a_cfree((c3_w*)dog_u);
+          //  Extended cells (marked) use wfree; standard cells use cfree
+          if ( u3m_meta_marker == dog_u->mug_w ) {
+            u3a_wfree(dog_u);
+          }
+          else {
+            u3a_cfree((c3_w*)dog_u);
+          }
           if ( !_(u3a_is_cat(t_dog)) ) {
             dog = t_dog;
             goto top;
@@ -882,7 +955,7 @@ top:
   }
 }
 
-/* _me_lose_south(): lose on a south road.
+/* _me_lose_south(): lose on a south road, preserving intern bit.
 */
 static void
 _me_lose_south(u3_noun dog)
@@ -890,12 +963,14 @@ _me_lose_south(u3_noun dog)
 top:
   if ( c3y == u3a_south_is_normal(u3R, dog) ) {
     u3a_noun* box_u = u3a_to_ptr(dog);
+    c3_w use_w = box_u->use_w & ~u3a_intern_bit;
+    c3_w int_w = box_u->use_w & u3a_intern_bit;
 
-    if ( box_u->use_w > 1 ) {
-      box_u->use_w -= 1;
+    if ( use_w > 1 ) {
+      box_u->use_w = (use_w - 1) | int_w;
     }
     else {
-      if ( 0 == box_u->use_w ) {
+      if ( 0 == use_w ) {
         u3m_bail(c3__foul);
       }
       else {
@@ -907,7 +982,13 @@ top:
           if ( !_(u3a_is_cat(h_dog)) ) {
             _me_lose_south(h_dog);
           }
-          u3a_cfree((c3_w*)dog_u);
+          //  Extended cells (marked) use wfree; standard cells use cfree
+          if ( u3m_meta_marker == dog_u->mug_w ) {
+            u3a_wfree(dog_u);
+          }
+          else {
+            u3a_cfree((c3_w*)dog_u);
+          }
           if ( !_(u3a_is_cat(t_dog)) ) {
             dog = t_dog;
             goto top;
@@ -955,7 +1036,7 @@ u3a_lose(u3_noun som)
   u3t_off(mal_o);
 }
 
-/* u3a_use(): reference count.
+/* u3a_use(): reference count (masks off intern bit).
 */
 c3_w
 u3a_use(u3_noun som)
@@ -965,7 +1046,7 @@ u3a_use(u3_noun som)
   }
   else {
     u3a_noun* box_u = u3a_to_ptr(som);
-    return box_u->use_w;
+    return box_u->use_w & ~u3a_intern_bit;
   }
 }
 
@@ -973,10 +1054,14 @@ u3a_use(u3_noun som)
   do { typeof(l) t = l; l = r; r = t; } while (0)
 
 /* _ca_wed_our(): unify [a] and [b] on u3R.
+**  When both have metadata, merge stencil candidates before unifying.
 */
 static inline c3_o
 _ca_wed_our(u3_noun *restrict a, u3_noun *restrict b)
 {
+  c3_o a_meta_o = u3m_has_meta(*a);
+  c3_o b_meta_o = u3m_has_meta(*b);
+
   c3_t asr_t = ( c3y == u3a_is_senior(u3R, *a) );
   c3_t bsr_t = ( c3y == u3a_is_senior(u3R, *b) );
 
@@ -999,16 +1084,30 @@ _ca_wed_our(u3_noun *restrict a, u3_noun *restrict b)
   //
   else if ( !asr_t ) SWAP(a, b);
 
+  //  At this point, *a is the one we're keeping
+  //  If both have metadata, merge *b's stencil candidates into *a
+  if ( c3y == a_meta_o && c3y == b_meta_o ) {
+    u3m_meta* a_met_u = u3m_meta_of(*a);
+    u3m_meta* b_met_u = u3m_meta_of(*b);
+    u3m_stencil_merge(a_met_u, b_met_u);
+  }
+  //  If only *b has metadata, we're losing it (could copy, but complex)
+  //  For now, just proceed with unification
+
   u3z(*b);
   *b = *a;
   return c3y;
 }
 
 /* _ca_wed_you(): unify [a] and [b] on senior [rod_u]. leaks
+**  When both have metadata, merge stencil candidates before unifying.
 */
 static c3_o
 _ca_wed_you(u3a_road* rod_u, u3_noun *restrict a, u3_noun *restrict b)
 {
+  c3_o a_meta_o = u3m_has_meta(*a);
+  c3_o b_meta_o = u3m_has_meta(*b);
+
   //  XX assume( rod_u != u3R )
   c3_t asr_t = ( c3y == u3a_is_senior(rod_u, *a) );
   c3_t bsr_t = ( c3y == u3a_is_senior(rod_u, *b) );
@@ -1031,6 +1130,16 @@ _ca_wed_you(u3a_road* rod_u, u3_noun *restrict a, u3_noun *restrict b)
   //  one of [a] or [b] are senior; keep it
   //
   else if ( !asr_t ) SWAP(a, b);
+
+  //  At this point, *a is the one we're keeping
+  //  If both have metadata, merge *b's stencil candidates into *a
+  if ( c3y == a_meta_o && c3y == b_meta_o ) {
+    u3m_meta* a_met_u = u3m_meta_of(*a);
+    u3m_meta* b_met_u = u3m_meta_of(*b);
+    u3m_stencil_merge(a_met_u, b_met_u);
+  }
+  //  If only *b has metadata, we're losing it (could copy, but complex)
+  //  For now, just proceed with unification
 
   *b = *a;
   return c3y;
@@ -1217,6 +1326,16 @@ u3a_mark_noun(u3_noun som)
       }
     }
   }
+}
+
+c3_w
+u3a_post_words(u3_post som_p) {
+  return _words(som_p);
+}
+
+c3_w
+u3a_noun_words(u3_noun som) {
+  return _words(u3a_to_off(som));
 }
 
 /* u3a_count_noun(): count size of pointer.

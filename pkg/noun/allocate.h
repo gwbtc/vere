@@ -96,6 +96,23 @@
         u3_noun tel;
       } u3a_cell;
 
+    /* u3a_cell_words: size of a standard cell in words
+    */
+#     define u3a_cell_words ((c3_w)c3_wiseof(u3a_cell))
+
+    /* u3a_intern_bit: MSB of use_w marks noun as interned/canonical
+    ** This allows O(1) check for already-interned nouns.
+    ** Actual refcount is use_w & ~u3a_intern_bit.
+    */
+#     define u3a_intern_bit 0x80000000
+
+    /* Extended cells:
+    **
+    ** Extended cells are detected by u3m_has_meta() in meta.h,
+    ** which checks for u3m_meta_marker (0x80000000) in the mug_w field.
+    ** The actual mug is then stored in the metadata.
+    */
+
 STATIC_ASSERT( (1U << u3a_min_log) == u3a_minimum,
                "log2 minimum allocation" );
 STATIC_ASSERT( u3a_vits <= u3a_min_log,
@@ -187,9 +204,7 @@ STATIC_ASSERT( u3a_vits <= u3a_min_log,
 
         u3a_jets jed;                         //  jet dashboard
 
-        struct {                              //  bytecode state
-          u3p(u3h_root) har_p;                //  formula->post of bytecode
-        } byc;
+        //  bytecode programs are stored in cell metadata (no separate cache)
 
         struct {                              //  scry namespace
           u3_noun gul;                        //  (list $+(* (unit (unit)))) now
@@ -212,6 +227,14 @@ STATIC_ASSERT( u3a_vits <= u3a_min_log,
           u3p(u3h_root) har_p;                //  transient
           u3p(u3h_root) per_p;                //  persistent
         } cax;
+
+        struct {                              //  noun interning
+          u3p(struct ga_root) set_p;          //  intern set
+        } int_u;
+
+        struct {                              //  stencil/kernel system
+          u3p(struct ga_root) ker_p;          //  kernel roots map
+        } sten_u;
       } u3a_road;
       typedef u3a_road u3_road;
 
@@ -427,6 +450,10 @@ typedef struct {
       /// Current road (thread-local).
       extern u3_road* u3a_Road;
 #       define u3R  u3a_Road
+
+      /// Junior road during take operations (for extended cell detection).
+      extern u3_road* u3a_Junior;
+#       define u3J  u3a_Junior
 
     /* u3_Code: memory code.
     */
@@ -724,6 +751,12 @@ u3a_post_info(u3_post);
         */
           void
           u3a_rewrite_compact(void);
+
+          c3_w
+          u3a_post_words(u3_post som_p);
+          
+          c3_w
+          u3a_noun_words(u3_noun som);
 
         /* u3a_count_noun(): count size of noun.
         */

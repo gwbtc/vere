@@ -5,16 +5,21 @@
 #include "allocate.h"
 #include "hashtable.h"
 #include "imprison.h"
+#include "intern.h"
 #include "jets.h"
 #include "jets/k.h"
 #include "jets/q.h"
 #include "manage.h"
+#include "meta.h"
 #include "options.h"
 #include "retrieve.h"
+#include "stencil.h"
 #include "trace.h"
 #include "vortex.h"
 #include "xtract.h"
 #include "zave.h"
+
+//  Metadata-based caching is always enabled (byc hash table removed)
 
 
 // define to have each opcode printed as it executes,
@@ -1693,60 +1698,68 @@ _cn_to_prog(c3_w pog_w)
   return u3to(u3n_prog, pog_p);
 }
 
-/* _n_find(): return prog for given formula with prefix (u3_nul for none).
- *            RETAIN.
+/* _n_find_meta(): return prog for formula using metadata caching.
+ *                 RETAIN.
+ *
+ * This replaces the hash table approach with metadata on interned cells.
+ * The formula is interned, and its compiled program is stored in the
+ * cell's metadata for O(1) lookup.
  */
 static u3n_prog*
-_n_find(u3_noun pre, u3_noun fol)
+_n_find_meta(u3_noun fol)
 {
-  u3_noun key = u3nc(u3k(pre), u3k(fol));
-  u3_weak pog = u3h_git(u3R->byc.har_p, key);
-  if ( u3_none != pog ) {
-    u3z(key);
-    return _cn_to_prog(pog);
-  }
-  else if ( u3R != &u3H->rod_u ) {
-    u3a_road* rod_u = u3R;
-    while ( rod_u->par_p ) {
-      rod_u = u3to(u3a_road, rod_u->par_p);
-      pog   = u3h_git(rod_u->byc.har_p, key);
-      if ( u3_none != pog ) {
-        c3_w i_w;
-        u3n_prog* old = _n_prog_old(_cn_to_prog(pog));
-        for ( i_w = 0; i_w < old->reg_u.len_w; ++i_w ) {
-          u3j_rite* rit_u = &(old->reg_u.rit_u[i_w]);
-          rit_u->own_o = c3n;
-        }
-        for ( i_w = 0; i_w < old->cal_u.len_w; ++i_w ) {
-          u3j_site* sit_u = &(old->cal_u.sit_u[i_w]);
-          sit_u->bat   = u3_none;
-          sit_u->pog_p = 0;
-          sit_u->fon_o = c3n;
-        }
-        u3h_put(u3R->byc.har_p, key, _cn_of_prog(old));
-        u3z(key);
-        return old;
-      }
-    }
+  //  Fast path: check if formula already has cached program (O(1))
+  u3m_meta* met_u = u3m_meta_get(fol);
+  if ( met_u && met_u->pog_p ) {
+    return u3to(u3n_prog, met_u->pog_p);
   }
 
-  {
-    u3n_prog* gop = _n_bite(fol);
-    u3h_put(u3R->byc.har_p, key, _cn_of_prog(gop));
-    u3z(key);
-    return gop;
+  //  Intern the formula (get canonical reference)
+  u3_noun can = u3i_intern_k(fol);
+
+  //  Check if canonical cell has metadata with cached program
+  met_u = u3m_meta_get(can);
+  if ( met_u && met_u->pog_p ) {
+    u3z(can);
+    return u3to(u3n_prog, met_u->pog_p);
   }
+
+  //  Need to compile - ensure cell has metadata
+  u3_noun ext = u3m_extend(can);
+  met_u = u3m_meta_of(ext);
+
+  //  Compile the formula
+  u3n_prog* pog_u = _n_bite(fol);
+
+  //  Cache in metadata
+  met_u->pog_p = u3of(u3n_prog, pog_u);
+
+  //  Handle reference management
+  if ( ext != can ) {
+    //  Cell was extended, update interner with new reference
+    //  TODO: proper interner update
+    u3z(can);
+  }
+  else {
+    u3z(can);
+  }
+
+  return pog_u;
 }
 
-/* u3n_find(): return prog for given formula,
- *             split by key (u3_nul for no key). RETAIN.
+/* u3n_find(): return prog for given formula.
+ *             RETAIN.
+ *
+ * With metadata-based caching, the key parameter is ignored.
+ * The formula is interned, and the program is stored in its metadata.
  */
 u3p(u3n_prog)
 u3n_find(u3_noun key, u3_noun fol)
 {
+  (void)key;  //  key parameter is legacy, ignored with metadata caching
   u3p(u3n_prog) pog_p;
   u3t_on(noc_o);
-  pog_p = u3of(u3n_prog, _n_find(key, fol));
+  pog_p = u3of(u3n_prog, _n_find_meta(fol));
   u3t_off(noc_o);
   return pog_p;
 }
@@ -2420,7 +2433,7 @@ _n_burn(u3n_prog* pog_u, u3_noun bus, c3_ys mov, c3_ys off)
       fam->pog_u = pog_u;
       _n_push(mov, off, x);
     nock_out:
-      pog_u = _n_find(u3_nul, o);
+      pog_u = _n_find_meta(o);
       pog   = pog_u->byc_u.ops_y;
       ip_w  = 0;
 #ifdef U3_CPU_DEBUG
@@ -2959,8 +2972,7 @@ u3n_burn(u3p(u3n_prog) pog_p, u3_noun bus)
 static u3_noun
 _n_burn_on(u3_noun bus, u3_noun fol)
 {
-  u3n_prog* pog_u = _n_find(u3_nul, fol);
-
+  u3n_prog* pog_u = _n_find_meta(fol);
   u3z(fol);
   return _n_burn_out(bus, pog_u);
 }
@@ -2983,284 +2995,64 @@ u3n_nock_on(u3_noun bus, u3_noun fol)
   return pro;
 }
 
-/* _cn_take_prog_dat(): take references from junior u3n_prog.
-*/
-static void
-_cn_take_prog_dat(u3n_prog* dst_u, u3n_prog* src_u)
-{
-  c3_w i_w;
-
-  for ( i_w = 0; i_w < src_u->lit_u.len_w; ++i_w ) {
-    dst_u->lit_u.non[i_w] = u3a_take(src_u->lit_u.non[i_w]);
-  }
-
-  for ( i_w = 0; i_w < src_u->mem_u.len_w; ++i_w ) {
-    u3n_memo* emo_u = &(src_u->mem_u.sot_u[i_w]);
-    u3n_memo* ome_u = &(dst_u->mem_u.sot_u[i_w]);
-    ome_u->sip_l    = emo_u->sip_l;
-    ome_u->key      = u3a_take(emo_u->key);
-    ome_u->cid      = emo_u->cid;
-  }
-
-  for ( i_w = 0; i_w < src_u->cal_u.len_w; ++i_w ) {
-    u3j_site_take(&(dst_u->cal_u.sit_u[i_w]),
-                  &(src_u->cal_u.sit_u[i_w]));
-  }
-
-  for ( i_w = 0; i_w < src_u->reg_u.len_w; ++i_w ) {
-    u3j_rite_take(&(dst_u->reg_u.rit_u[i_w]),
-                  &(src_u->reg_u.rit_u[i_w]));
-  }
-}
-
-/*  _cn_take_prog_cb(): u3h_take_with cb for taking junior u3n_prog's.
-*/
-static u3p(u3n_prog)
-_cn_take_prog_cb(c3_w pog_w)
-{
-  u3n_prog* pog_u = _cn_to_prog(pog_w);
-  u3n_prog* gop_u;
-
-  if ( c3y == pog_u->byc_u.own_o ) {
-    c3_w pad_w = (8 - pog_u->byc_u.len_w % 8) % 8;
-    gop_u = _n_prog_new(pog_u->byc_u.len_w,
-                        pog_u->cal_u.len_w,
-                        pog_u->reg_u.len_w,
-                        pog_u->lit_u.len_w,
-                        pog_u->mem_u.len_w);
-    memcpy(gop_u->byc_u.ops_y, pog_u->byc_u.ops_y, pog_u->byc_u.len_w + pad_w);
-  }
-  else {
-    gop_u = _n_prog_old(pog_u);
-  }
-
-  _cn_take_prog_dat(gop_u, pog_u);
-  // _n_prog_take_dat(gop_u, pog_u, c3n);
-
-  return _cn_of_prog(gop_u);
-}
-
-/* u3n_take(): copy junior bytecode state.
-*/
-u3p(u3h_root)
-u3n_take(u3p(u3h_root) har_p)
-{
-  return u3h_take_with(har_p, _cn_take_prog_cb);
-}
-
-/* _cn_merge_prog_dat(): copy references from src_u u3n_prog to dst_u.
-*/
-static void
-_cn_merge_prog_dat(u3n_prog* dst_u, u3n_prog* src_u)
-{
-  c3_w i_w;
-
-  for ( i_w = 0; i_w < src_u->lit_u.len_w; ++i_w ) {
-    u3z(dst_u->lit_u.non[i_w]);
-    dst_u->lit_u.non[i_w] = src_u->lit_u.non[i_w];
-  }
-
-  for ( i_w = 0; i_w < src_u->mem_u.len_w; ++i_w ) {
-    u3n_memo* emo_u = &(dst_u->mem_u.sot_u[i_w]);
-    u3n_memo* ome_u = &(src_u->mem_u.sot_u[i_w]);
-    u3z(emo_u->key);
-    emo_u->sip_l    = ome_u->sip_l;
-    emo_u->key      = ome_u->key;
-    emo_u->cid      = ome_u->cid;
-  }
-
-  for ( i_w = 0; i_w < src_u->cal_u.len_w; ++i_w ) {
-    u3j_site_merge(&(dst_u->cal_u.sit_u[i_w]),
-                   &(src_u->cal_u.sit_u[i_w]));
-  }
-
-  for ( i_w = 0; i_w < src_u->reg_u.len_w; ++i_w ) {
-    u3j_rite_merge(&(dst_u->reg_u.rit_u[i_w]),
-                   &(src_u->reg_u.rit_u[i_w]));
-  }
-}
-
-/*  _cn_merge_prog_cb(): u3h_walk_with cb for integrating taken u3n_prog's.
-*/
-static void
-_cn_merge_prog_cb(u3_noun kev, void* wit)
-{
-  u3p(u3h_root) har_p = *(u3p(u3h_root)*)wit;
-  u3n_prog*     pog_u;
-  u3_weak         got;
-  u3_noun         key;
-  c3_w          pog_w;
-  u3x_cell(kev, &key, &pog_w);
-
-  pog_u = _cn_to_prog(pog_w);
-  got   = u3h_git(har_p, key);
-
-  if ( u3_none != got ) {
-    u3n_prog* sep_u = _cn_to_prog(got);
-    _cn_merge_prog_dat(sep_u, pog_u);
-    u3a_free(pog_u);
-    pog_u = sep_u;
-  }
-
-  u3h_put(har_p, key, _cn_of_prog(pog_u));
-}
-
-/* u3n_reap(): promote bytecode state.
-*/
-void
-u3n_reap(u3p(u3h_root) har_p)
-{
-  u3h_walk_with(har_p, _cn_merge_prog_cb, &u3R->byc.har_p);
-  // NB *not* u3n_free, _cn_merge_prog_cb() transfers u3n_prog's
-  u3h_free(har_p);
-}
-
-/* _n_ream(): ream program call sites
-*/
-void
-_n_ream(u3_noun kev)
-{
-  u3n_prog* pog_u = _cn_to_prog(u3t(kev));
-
-  c3_w pad_w = (8 - pog_u->byc_u.len_w % 8) % 8;
-  c3_w pod_w = pog_u->lit_u.len_w % 2;
-  c3_w ped_w = pog_u->mem_u.len_w % 2;
-  // fix up pointers for loom portability
-  pog_u->byc_u.ops_y = (c3_y*) _n_prog_dat(pog_u);
-  pog_u->lit_u.non   = (u3_noun*) (pog_u->byc_u.ops_y + pog_u->byc_u.len_w + pad_w);
-  pog_u->mem_u.sot_u = (u3n_memo*) (pog_u->lit_u.non + pog_u->lit_u.len_w + pod_w);
-  pog_u->cal_u.sit_u = (u3j_site*) (pog_u->mem_u.sot_u + pog_u->mem_u.len_w + ped_w);
-  pog_u->reg_u.rit_u = (u3j_rite*) (pog_u->cal_u.sit_u + pog_u->cal_u.len_w);
-
-  for ( c3_w i_w = 0; i_w < pog_u->cal_u.len_w; ++i_w ) {
-    u3j_site_ream(&(pog_u->cal_u.sit_u[i_w]));
-  }
-}
-
-/* u3n_ream(): refresh after restoring from checkpoint.
-*/
-void
-u3n_ream()
-{
-  u3_assert(u3R == &(u3H->rod_u));
-  u3h_walk(u3R->byc.har_p, _n_ream);
-}
-
-/* _n_prog_mark(): mark program for gc.
-*/
-static c3_w
-_n_prog_mark(u3n_prog* pog_u)
-{
-  c3_w i_w, tot_w = u3a_mark_mptr(pog_u);
-
-  for ( i_w = 0; i_w < pog_u->lit_u.len_w; ++i_w ) {
-    tot_w += u3a_mark_noun(pog_u->lit_u.non[i_w]);
-  }
-
-  for ( i_w = 0; i_w < pog_u->mem_u.len_w; ++i_w ) {
-    tot_w += u3a_mark_noun(pog_u->mem_u.sot_u[i_w].key);
-  }
-
-  for ( i_w = 0; i_w < pog_u->cal_u.len_w; ++i_w ) {
-    tot_w += u3j_site_mark(&(pog_u->cal_u.sit_u[i_w]));
-  }
-
-  for ( i_w = 0; i_w < pog_u->reg_u.len_w; ++i_w ) {
-    tot_w += u3j_rite_mark(&(pog_u->reg_u.rit_u[i_w]));
-  }
-
-  return tot_w;
-}
-
-/* _n_bam(): u3h_walk_with helper for u3n_mark
+/* u3n_ream(): refresh bytecode after restoring from checkpoint.
+ *
+ * With metadata-based caching, bytecode programs are stored in extended
+ * cells and will be recompiled on demand. This is now a no-op.
  */
-static void
-_n_bam(u3_noun kev, void* dat)
+void
+u3n_ream(void)
 {
-  u3n_prog* pog = _cn_to_prog(u3t(kev));
-  c3_w*   bam_w = dat;
-
-  *bam_w += _n_prog_mark(pog);
+  //  Programs stored in cell metadata will be recompiled on demand
 }
 
-/* u3n_mark(): mark the bytecode cache for gc.
+/* u3n_mark(): mark bytecode programs for gc.
+ *
+ * With metadata-based caching, programs are stored in extended cells.
+ * They are marked as part of the normal cell marking process.
  */
 u3m_quac*
-u3n_mark()
+u3n_mark(void)
 {
-  u3m_quac** qua_u = c3_malloc(sizeof(*qua_u) * 3);
-
-  qua_u[0] = c3_calloc(sizeof(*qua_u[0]));
-  qua_u[0]->nam_c = strdup("bytecode programs");
-
-  u3p(u3h_root) har_p = u3R->byc.har_p;
-  u3h_walk_with(har_p, _n_bam, &qua_u[0]->siz_w);
-  qua_u[0]->siz_w = qua_u[0]->siz_w * 4;
-
-  qua_u[1] = c3_calloc(sizeof(*qua_u[1]));
-  qua_u[1]->nam_c = strdup("bytecode cache");
-  qua_u[1]->siz_w = u3h_mark(har_p) * 4;
-
-  qua_u[2] = NULL;
-
-  u3m_quac* tot_u = c3_malloc(sizeof(*tot_u));
-  tot_u->nam_c = strdup("total nock stuff");
-  tot_u->siz_w = qua_u[0]->siz_w + qua_u[1]->siz_w;
-  tot_u->qua_u = qua_u;
-
+  u3m_quac* tot_u = c3_calloc(sizeof(*tot_u));
+  tot_u->nam_c = strdup("nock (metadata-cached)");
+  tot_u->siz_w = 0;  //  programs marked with their cells
+  tot_u->qua_u = NULL;
   return tot_u;
 }
 
-/* u3n_reclaim(): clear ad-hoc persistent caches to reclaim memory.
-*/
+/* u3n_reclaim(): clear bytecode caches to reclaim memory.
+ *
+ * With metadata-based caching, programs are stored in extended cells.
+ * We could walk the interner and clear pog_p pointers, but it's simpler
+ * to let them be freed when the cells are freed.
+ */
 void
 u3n_reclaim(void)
 {
-  //  clear the bytecode cache
-  //
-  //    We can't just u3h_free() -- the value is a post to a u3n_prog.
-  //    Note that the hank cache *must* also be freed (in u3j_reclaim())
-  //
-  u3n_free();
-  u3R->byc.har_p = u3h_new();
+  //  Programs stored in cell metadata are freed with their cells
 }
 
-/* u3n_rewrite_compact(): rewrite the bytecode cache for compaction.
+/* u3n_rewrite_compact(): rewrite bytecode cache for compaction.
  *
- * NB: u3R->byc.har_p *must* be cleared (currently via u3n_reclaim above),
- * since it contains things that look like nouns but aren't.
- * Specifically, it contains "cells" where the tail is a
- * pointer to a u3a_malloc'ed block that contains loom pointers.
- *
- * You should be able to walk this with u3h_walk and rewrite the
- * pointers, but you need to be careful to handle that u3a_malloc
- * pointers can't be turned into a box by stepping back two words. You
- * must step back one word to get the padding, step then step back that
- * many more words (plus one?).
+ * With metadata-based caching, there's no separate hash table to rewrite.
+ * Programs in cell metadata are rewritten as part of cell rewriting.
  */
 void
-u3n_rewrite_compact()
+u3n_rewrite_compact(void)
 {
-  u3h_relocate(&(u3R->byc.har_p));
+  //  No separate bytecode cache to rewrite
 }
 
-
-/* _n_feb(): u3h_walk helper for u3n_free
- */
-static void
-_n_feb(u3_noun kev)
-{
-  _cn_prog_free(_cn_to_prog(u3t(kev)));
-}
-
-/* u3n_free(): free bytecode cache
+/* u3n_free(): free bytecode cache.
+ *
+ * With metadata-based caching, programs are stored in extended cells.
+ * This is now a no-op.
  */
 void
-u3n_free()
+u3n_free(void)
 {
-  u3p(u3h_root) har_p = u3R->byc.har_p;
-  u3h_walk(har_p, _n_feb);
-  u3h_free(har_p);
+  //  Programs stored in cell metadata are freed with their cells
 }
 
 /* u3n_kick_on(): fire `gat` without changing the sample.

@@ -864,6 +864,45 @@ _free_words(u3_post som_p, c3_w pag_w, u3_post dir_p)
   }
 }
 
+static c3_w
+_words(u3_post som_p)
+{
+  u3p(u3a_crag) *dir_u = u3to(u3p(u3a_crag), HEAP.pag_p);
+  c3_w pag_w = post_to_page(som_p);
+
+  if ( pag_w >= HEAP.len_w ) {
+    fprintf(stderr, "\033[31m"
+                    "palloc: page out of heap som_p=0x%x pag_w=%u len_w=%u\r\n"
+                    "\033[0m",
+                    som_p, pag_w, HEAP.len_w);
+    u3_assert(!"loom: corrupt"); return 0;
+  }
+
+  u3_post dir_p = dir_u[pag_w];
+
+  if ( dir_p <= u3a_rest_pg ) {
+    c3_w siz_w = 1;
+    dir_u[pag_w] = u3a_free_pg;
+
+    //  head-page 0 in a south road can only have a size of 1
+    //
+    if ( pag_w || !HEAP.off_ws ) {
+      while( dir_u[pag_w + (HEAP.dir_ws * (c3_ws)siz_w)] == u3a_rest_pg ) {
+        siz_w++;
+      }
+    }
+    return siz_w << u3a_page;
+  }
+  else {
+    u3a_crag *pag_u = u3to(u3a_crag, dir_p);
+    c3_g bit_g = pag_u->log_s - u3a_min_log;
+    c3_w pos_w = (som_p & ((1U << u3a_page) - 1)) >> pag_u->log_s;
+    const u3a_hunk_dose *hun_u = &(u3a_Hunk[bit_g]);
+    return hun_u->len_s;
+  }
+}
+
+
 static void
 _ifree(u3_post som_p)
 {

@@ -55,8 +55,8 @@
       u3_noun
       u3n_nock_on(u3_noun bus, u3_noun fol);
 
-    /* u3n_find(): return prog for given formula,
-     *             split by key (u3_nul for none). RETAIN.
+    /* u3n_find(): return prog for given formula.
+     *             With metadata caching, key is ignored. RETAIN.
      */
       u3p(u3n_prog)
       u3n_find(u3_noun key, u3_noun fol);
@@ -110,16 +110,6 @@
     */
       u3_noun
       u3n_nock_an(u3_noun bus, u3_noun fol);
-
-    /* u3n_reap(): promote bytecode state.
-     */
-      void
-      u3n_reap(u3p(u3h_root) har_p);
-
-    /* u3n_take(): copy junior bytecode state.
-     */
-      u3p(u3h_root)
-      u3n_take(u3p(u3h_root) har_p);
 
     /* u3n_mark(): mark bytecode cache.
      */

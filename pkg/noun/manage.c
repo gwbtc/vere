@@ -23,7 +23,9 @@
 #include "events.h"
 #include "hashtable.h"
 #include "imprison.h"
+#include "intern.h"
 #include "jets.h"
+#include "stencil.h"
 #include "jets/k.h"
 #include "jets/q.h"
 #include "log.h"
@@ -514,10 +516,11 @@ _pave_parts(void)
   u3R->jed.cod_p = u3h_new();
   u3R->jed.han_p = u3h_new();
   u3R->jed.bas_p = u3h_new();
-  u3R->byc.har_p = u3h_new();
+  //  bytecode programs are stored in cell metadata (no separate hash table)
   u3R->lop_p     = u3h_new();
   u3R->tim       = u3_nul;
   u3R->how.fag_w = 0;
+  u3R->int_u.set_p = 0;  //  interner initialized on demand
 }
 
 static c3_d
@@ -1332,13 +1335,18 @@ u3m_love(u3_noun pro)
 {
   //  save cache pointers from current road
   //
-  u3p(u3h_root) byc_p = u3R->byc.har_p;
   u3a_jets      jed_u = u3R->jed;
   u3p(u3h_root) per_p = u3R->cax.per_p;
+  u3p(struct ga_root) int_p = u3R->int_u.set_p;
+  u3p(struct ga_root) ker_p = u3R->sten_u.ker_p;
 
   //  are there any timers on the road?
   //
   c3_o tim_o = u3du(u3R->tim);
+
+  //  save junior road for extended cell detection during take
+  //
+  u3J = u3R;
 
   //  fallback to parent road (child heap on parent's stack)
   //
@@ -1346,12 +1354,25 @@ u3m_love(u3_noun pro)
 
   if ( _(tim_o) ) _m_renew_now();
 
+  //  reap kernels FIRST (stores forwarding pointers for stencil fixup)
+  //  must happen before u3a_take since stencils read forwarding pointers
+  //
+  u3m_kernel_reap(ker_p);
+
   //  copy product and caches off our stack
+  //  (bytecode programs are stored in cell metadata and recompiled on demand)
   //
   pro   = u3a_take(pro);
   jed_u = u3j_take(jed_u);
-  byc_p = u3n_take(byc_p);
   per_p = u3h_take(per_p);
+
+  //  clear junior road pointer
+  //
+  u3J = 0;
+
+  //  reap interner BEFORE drop_heap (while child data still accessible)
+  //
+  u3i_intern_reap(int_p);
 
   //  pop the stack
   //
@@ -1362,7 +1383,6 @@ u3m_love(u3_noun pro)
   //  integrate junior caches
   //
   u3j_reap(jed_u);
-  u3n_reap(byc_p);
   u3z_reap(u3z_memo_keep, per_p);
 
   return pro;

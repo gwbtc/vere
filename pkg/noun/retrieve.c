@@ -5,6 +5,7 @@
 #include "allocate.h"
 #include "hashtable.h"
 #include "imprison.h"
+#include "meta.h"
 #include "murmur3.h"
 #include "trace.h"
 #include "xtract.h"
@@ -296,10 +297,16 @@ _cr_sing_push(u3a_pile* pil_u, u3_noun a, u3_noun b)
 static inline c3_o
 _cr_sing_mug(u3a_noun* a_u, u3a_noun* b_u)
 {
-  //  XX add debug assertions that both mugs are 31-bit
-  //  (ie, not u3a_take() relocation references)
+  //  Handle extended cells by getting mug from metadata if needed
   //
-  if ( a_u->mug_w && b_u->mug_w && (a_u->mug_w != b_u->mug_w) ) {
+  c3_w a_mug = ( u3m_meta_marker == a_u->mug_w )
+             ? ((u3a_cell_x*)a_u)->met_u.mug_w
+             : a_u->mug_w;
+  c3_w b_mug = ( u3m_meta_marker == b_u->mug_w )
+             ? ((u3a_cell_x*)b_u)->met_u.mug_w
+             : b_u->mug_w;
+
+  if ( a_mug && b_mug && (a_mug != b_mug) ) {
     return c3n;
   }
 
@@ -1759,15 +1766,21 @@ _cr_mug_next(u3a_pile* pil_u, u3_noun veb)
       u3a_noun* veb_u = u3a_to_ptr(veb);
 
       //  veb has already been mugged, return memoized value
+      //  Handle extended cells where mug is in metadata
       //
-      //    XX add debug assertion that mug is 31-bit?
-      //
-      if ( veb_u->mug_w ) {
+      if ( u3m_meta_marker == veb_u->mug_w ) {
+        c3_w mug_w = ((u3a_cell_x*)veb_u)->met_u.mug_w;
+        if ( mug_w ) {
+          return (c3_l)mug_w;
+        }
+        //  extended cell with no mug yet - fall through to compute
+      }
+      else if ( veb_u->mug_w ) {
         return (c3_l)veb_u->mug_w;
       }
       //  veb is an indirect atom, mug its bytes and memoize
       //
-      else if ( c3y == u3a_is_atom(veb) ) {
+      if ( c3y == u3a_is_atom(veb) ) {
         u3a_atom* vat_u = (u3a_atom*)veb_u;
         c3_l      mug_l = u3r_mug_words(vat_u->buf_w, vat_u->len_w);
         vat_u->mug_w = mug_l;
@@ -1829,9 +1842,10 @@ u3r_mug(u3_noun veb)
       else {
         u3a_cell* cel_u = u3a_to_ptr(fam_u->cel);
 
-        mug_l        = u3r_mug_both(fam_u->mug_l, mug_l);
-        cel_u->mug_w = mug_l;
-        fam_u        = u3a_pop(&pil_u);
+        mug_l = u3r_mug_both(fam_u->mug_l, mug_l);
+        //  Store mug in metadata for extended cells, or mug_w for normal
+        u3m_mug_set(cel_u, mug_l);
+        fam_u = u3a_pop(&pil_u);
       }
     }
     while ( c3n == u3a_pile_done(&pil_u) );
