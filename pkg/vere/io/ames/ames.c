@@ -264,7 +264,9 @@ _ames_pact_free(u3_pact* pac_u)
       exit(1);
   }
 
-  _ames_ref_hun_lose(pac_u->hun_u);
+  if ( pac_u->hun_u ) {
+    _ames_ref_hun_lose(pac_u->hun_u);
+  }
   c3_free(pac_u);
 }
 
