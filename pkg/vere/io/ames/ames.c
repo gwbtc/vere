@@ -29,6 +29,7 @@
 #define QUEUE_MAX        30             //  max number of packets in queue
 
 #define DIRECT_ROUTE_TIMEOUT_MICROS 120000000
+#define FINE_DUP_SLOTS 64
 
   typedef struct _u3_ames u3_ames;
   typedef struct _u3_mesa_auto {
@@ -170,7 +171,19 @@ STATIC_ASSERT(
   typedef struct _u3_send_handle {
     uv_udp_send_t    snd_u;             //  udp send request
     u3_ref_hun       *hun_u;
+    sockaddr_in      lan_u;
   } u3_send_handle;
+
+  typedef struct _u3_saxo_cb_ctx {
+    struct _u3_ames* sam_u;
+    u3_ship          rec_u;
+  } u3_saxo_cb_ctx;
+
+  typedef struct _u3_fine_dup {
+    c3_l mug_l;
+    c3_w fra_w;
+    c3_w hit_w;
+  } u3_fine_dup;
 
 /* u3_pact: ames packet
  *
@@ -201,6 +214,30 @@ const c3_c* PATH_PARSER =
   ";~(pfix fas (most fas (cook crip (star ;~(less fas prn)))))";
 
 static c3_o net_o = c3y;  // online heuristic to limit verbosity
+static u3_fine_dup _fine_dup_tab[FINE_DUP_SLOTS];
+static c3_d _fine_rsp_count_d;
+
+static void
+_fine_dup_note(c3_w fra_w, const c3_c* pat_c)
+{
+  c3_w len_w = strlen(pat_c);
+  c3_l mug_l = u3r_mug_bytes((const c3_y*)pat_c, len_w);
+  c3_w idx_w = (mug_l ^ fra_w) % FINE_DUP_SLOTS;
+  u3_fine_dup* dup_u = &_fine_dup_tab[idx_w];
+
+  if ( (dup_u->mug_l == mug_l) && (dup_u->fra_w == fra_w) ) {
+    dup_u->hit_w++;
+    if ( !(dup_u->hit_w % 100) ) {
+      u3l_log("fine: duplicate response x%u fra=%u path=/%s",
+              dup_u->hit_w, fra_w, pat_c);
+    }
+  }
+  else {
+    dup_u->mug_l = mug_l;
+    dup_u->fra_w = fra_w;
+    dup_u->hit_w = 1;
+  }
+}
 
 ///* _ames_alloc(): libuv buffer allocator.
 //*/
@@ -234,7 +271,7 @@ _ames_ref_hun_gain(u3_ref_hun* hun_u) {
 
 static u3_ref_hun*
 _ames_ref_hun_new(c3_w len_w) {
-  u3_ref_hun* hun_u = c3_malloc(sizeof(hun_u) + len_w);
+  u3_ref_hun* hun_u = c3_malloc(sizeof(*hun_u) + len_w);
   hun_u->ref_w = 1;
   hun_u->len_w = len_w;
   return hun_u;
@@ -258,10 +295,26 @@ _ames_pact_free(u3_pact* pac_u)
       break;
 
     default:
-      u3l_log("ames_pact_free: bad packet type %s",
-              _str_typ(pac_u->typ_y));
+    {
+      c3_w pip_w = pac_u->lan_u.sin_addr.s_addr;
+      c3_c pip_c[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &pip_w, pip_c, INET_ADDRSTRLEN);
+      u3_noun sen = u3dc("scot", 'p', u3_ship_to_noun(pac_u->pre_u.sen_u));
+      u3_noun rec = u3dc("scot", 'p', u3_ship_to_noun(pac_u->pre_u.rec_u));
+      c3_c* sen_c = u3r_string(sen);
+      c3_c* rec_c = u3r_string(rec);
+      u3l_log("ames_pact_free: bad packet type %s (%u), pac=%p hun=%p len=%u "
+              "for=%d ver=%u rel=%d req=%d sim=%d sen=%s rec=%s lan=%s:%u",
+              _str_typ(pac_u->typ_y), pac_u->typ_y, pac_u, pac_u->hun_u,
+              (pac_u->hun_u ? pac_u->hun_u->len_w : 0), pac_u->for_o,
+              pac_u->hed_u.ver_y, pac_u->hed_u.rel_o, pac_u->hed_u.req_o,
+              pac_u->hed_u.sim_o, sen_c, rec_c, pip_c,
+              ntohs(pac_u->lan_u.sin_port));
+      c3_free(sen_c); c3_free(rec_c);
+      u3z(sen); u3z(rec);
       u3_king_bail();
       exit(1);
+    }
   }
 
   if ( pac_u->hun_u ) {
@@ -417,9 +470,10 @@ _ames_sift_prel(u3_head* hed_u,
 static c3_o
 _fine_sift_wail(u3_pact* pac_u, c3_w cur_w)
 {
+  c3_w tag_w = sizeof(pac_u->wal_u.tag_y);
   c3_w fra_w = sizeof(pac_u->wal_u.pep_u.fra_w);
   c3_w len_w = sizeof(pac_u->wal_u.pep_u.len_s);
-  c3_w exp_w = fra_w + len_w;
+  c3_w exp_w = tag_w + fra_w + len_w;
   c3_s len_s;
 
   if ( cur_w + exp_w > pac_u->hun_u->len_w ) {
@@ -441,6 +495,10 @@ _fine_sift_wail(u3_pact* pac_u, c3_w cur_w)
   //
   pac_u->wal_u.pep_u.fra_w = c3_sift_word(pac_u->hun_u->hun_y + cur_w);
   cur_w += fra_w;
+  if ( 0 == pac_u->wal_u.pep_u.fra_w ) {
+    u3l_log("fine: wail bad fragment number 0");
+    return c3n;
+  }
 
   //  parse path length field
   //
@@ -576,7 +634,7 @@ _ames_etch_prel(u3_head* hed_u, u3_prel* pre_u, c3_y* buf_y)
   //  write receiver ship
   //
   c3_y rec_y = 2 << hed_u->rac_y;
-  u3_ship_to_bytes(pre_u->rec_u, sen_y, buf_y + cur_w);
+  u3_ship_to_bytes(pre_u->rec_u, rec_y, buf_y + cur_w);
   cur_w += rec_y;
 }
 
@@ -709,8 +767,22 @@ _ames_send_cb(uv_udp_send_t* req_u, c3_i sas_i)
   if ( !sas_i ) {
     net_o = c3y;
   }
-  else if ( c3y == net_o ) {
-    u3l_log("ames: send fail: %s", uv_strerror(sas_i));
+  else {
+    c3_w pip_w = snd_u->lan_u.sin_addr.s_addr;
+    c3_c pip_c[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &pip_w, pip_c, INET_ADDRSTRLEN);
+    if ( UV_EINVAL == sas_i ) {
+      u3l_log("ames: send fail EINVAL (%d), lane=%s:%u family=%u len=%u",
+              sas_i, pip_c, ntohs(snd_u->lan_u.sin_port),
+              snd_u->lan_u.sin_family,
+              (snd_u->hun_u ? snd_u->hun_u->len_w : 0));
+    }
+    else if ( c3y == net_o ) {
+      u3l_log("ames: send fail: %s (%d), lane=%s:%u family=%u len=%u",
+              uv_strerror(sas_i), sas_i, pip_c, ntohs(snd_u->lan_u.sin_port),
+              snd_u->lan_u.sin_family,
+              (snd_u->hun_u ? snd_u->hun_u->len_w : 0));
+    }
     net_o = c3n;
   }
 
@@ -749,8 +821,18 @@ _ames_send(u3_ames* sam_u, sockaddr_in lan_u, u3_ref_hun* hun_u)
       _ames_ref_hun_lose(hun_u);
   }
   else {
+    if ( (AF_INET != lan_u.sin_family) || (0 == lan_u.sin_port) ) {
+      c3_w pip_w = lan_u.sin_addr.s_addr;
+      c3_c pip_c[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &pip_w, pip_c, INET_ADDRSTRLEN);
+      u3l_log("ames: dropping invalid outbound lane=%s:%u family=%u len=%u",
+              pip_c, ntohs(lan_u.sin_port), lan_u.sin_family, hun_u->len_w);
+      _ames_ref_hun_lose(hun_u);
+      return;
+    }
     u3_send_handle* snd_u = c3_calloc(sizeof(*snd_u));
     snd_u->hun_u = hun_u;
+    snd_u->lan_u = lan_u;
     uv_buf_t buf_u = uv_buf_init((c3_c*)hun_u->hun_y, hun_u->len_w);
     c3_w nip_w = lan_u.sin_addr.s_addr;
     c3_c nip_c[INET_ADDRSTRLEN];
@@ -867,6 +949,7 @@ static c3_o
 _ames_lane_from_peer(u3_ames* sam_u,
                      u3_peer* per_u,
                      sockaddr_in lan_u[2]) {
+  memset(lan_u, 0, sizeof(sockaddr_in) * 2);
   if ( NULL == per_u ) return c3n;
   if ( u3_peer_full != per_u->liv_e ) return c3n;
   if ( c3y == u3_ships_equal(per_u->her_u, sam_u->pir_u->who_u) )
@@ -965,14 +1048,14 @@ _ames_lamp_lane(u3_mesa_auto* mes_u, u3_ship her_u, sockaddr_in* lan_u);
 static void
 _saxo_cb(void* vod_p, u3_noun nun)
 {
-  u3_pact* pac_u = vod_p;
-  u3_ames* sam_u = pac_u->sam_u;
+  u3_saxo_cb_ctx* ctx_u = vod_p;
+  u3_ames* sam_u = ctx_u->sam_u;
 
   u3_weak sax    = u3r_at(7, nun);
 
   u3_peer* per_u = NULL;
   if ( sax != u3_none ) {
-    per_u = _mesa_gut_peer(sam_u->mes_u, pac_u->pre_u.rec_u);
+    per_u = _mesa_gut_peer(sam_u->mes_u, ctx_u->rec_u);
     u3_noun her = u3h(sax);
     u3_ship her_u = u3_ship_of_noun(her);
     u3_noun lam = u3do("rear", u3k(sax));
@@ -984,6 +1067,7 @@ _saxo_cb(void* vod_p, u3_noun nun)
   }
 
   u3z(nun);
+  c3_free(ctx_u);
 }
 
 sockaddr_in
@@ -1035,7 +1119,10 @@ _meet_peer(u3_ames* sam_u, u3_pact* pac_u)
 
   if ( (NULL == per_u) || !(u3_peer_lamp & per_u->liv_e) ) {
     u3_noun pax = u3nc(u3dc("scot", c3__p, u3k(her)), u3_nul);
-    u3_pier_peek_last(sam_u->mes_u->pir_u, u3k(gan), c3__j, c3__saxo, pax, pac_u, _saxo_cb);
+    u3_saxo_cb_ctx* ctx_u = c3_malloc(sizeof(*ctx_u));
+    ctx_u->sam_u = sam_u;
+    ctx_u->rec_u = pac_u->pre_u.rec_u;
+    u3_pier_peek_last(sam_u->mes_u->pir_u, u3k(gan), c3__j, c3__saxo, pax, ctx_u, _saxo_cb);
   }
 
   if ( (NULL == per_u) || !(u3_peer_lane & per_u->liv_e) ) {
@@ -1278,8 +1365,21 @@ _ames_send_many(u3_pact* pac_u, sockaddr_in lan_u[2], c3_o for_o)
   }
 
   for ( c3_w i = 0;
-        ( (i < 2) && _mesa_is_lane_zero(lan_u[i]) );
+        ( (i < 2) && (c3n == _mesa_is_lane_zero(lan_u[i])) );
         i++) {
+    if ( u3C.wag_w & u3o_verbose ) {
+      u3_noun sen = u3dc("scot", 'p', u3_ship_to_noun(pac_u->pre_u.sen_u));
+      u3_noun rec = u3dc("scot", 'p', u3_ship_to_noun(pac_u->pre_u.rec_u));
+      c3_c* sen_c = u3r_string(sen);
+      c3_c* rec_c = u3r_string(rec);
+      c3_w pip_w = lan_u[i].sin_addr.s_addr;
+      c3_c pip_c[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &pip_w, pip_c, INET_ADDRSTRLEN);
+      u3l_log("ames: send-many[%u] %s -> %s lane=%s:%u",
+              i, sen_c, rec_c, pip_c, ntohs(lan_u[i].sin_port));
+      c3_free(sen_c); c3_free(rec_c);
+      u3z(sen); u3z(rec);
+    }
     _ames_send(sam_u, lan_u[i], _ames_ref_hun_gain(pac_u->hun_u));
   }
 }
@@ -1308,7 +1408,7 @@ _ames_lane_scry_cb(u3_pact* pac_u, u3_peer* per_u)
   }
   else {
     sam_u->sat_u.saw_d = 0;
-    sockaddr_in lan_u[2];
+    sockaddr_in lan_u[2] = {0};
     _ames_lane_from_peer(sam_u, per_u, lan_u);
     
     //  if there are lanes, send the packet on them; otherwise drop it
@@ -1440,6 +1540,12 @@ _fine_hunk_scry_cb(void* vod_p, u3_noun nun)
   u3_weak    fra = u3_none;
 
   u3_assert( PACT_PURR == pac_u->typ_y );
+  if ( 0 == pep_u->fra_w ) {
+    u3l_log("fine: bad response fragment number 0");
+    _ames_pact_free(pac_u);
+    u3z(nun);
+    return;
+  }
 
   {
     //  XX virtualize
@@ -1644,6 +1750,59 @@ _fine_hear_request(u3_pact* req_u, c3_w cur_w)
 static void
 _fine_hear_response(u3_pact* pac_u, c3_w cur_w)
 {
+  //  Validate the embedded peep (fragment/path) before punting to Arvo fine.
+  //  This prevents malformed responses from triggering pathological retry loops.
+  if ( cur_w + sizeof(c3_w) + sizeof(c3_s) > pac_u->hun_u->len_w ) {
+    u3l_log("fine: response too short for peep header");
+    _ames_pact_free(pac_u);
+    return;
+  }
+
+  c3_w fra_w = c3_sift_word(pac_u->hun_u->hun_y + cur_w);
+  c3_s len_s = c3_sift_short(pac_u->hun_u->hun_y + cur_w + sizeof(c3_w));
+  c3_w tot_w = cur_w + sizeof(c3_w) + sizeof(c3_s) + len_s;
+
+  if ( 0 == fra_w ) {
+    u3l_log("fine: response bad fragment number 0");
+    _ames_pact_free(pac_u);
+    return;
+  }
+
+  if ( len_s > FINE_PATH_MAX ) {
+    u3l_log("fine: response path too long %u (max %u)", len_s, FINE_PATH_MAX);
+    _ames_pact_free(pac_u);
+    return;
+  }
+
+  if ( tot_w > pac_u->hun_u->len_w ) {
+    u3l_log("fine: response malformed peep total=%u packet=%u",
+            tot_w, pac_u->hun_u->len_w);
+    _ames_pact_free(pac_u);
+    return;
+  }
+
+  c3_c* pat_c = c3_calloc(len_s + 1);
+  memcpy(pat_c, pac_u->hun_u->hun_y + cur_w + sizeof(c3_w) + sizeof(c3_s), len_s);
+  _fine_dup_note(fra_w, pat_c);
+  _fine_rsp_count_d++;
+
+  if ( 0 == (_fine_rsp_count_d % 100) ) {
+    c3_w dep_w = pac_u->sam_u->mes_u->car_u.dep_w;
+    c3_w sac_w = u3h_wyt(pac_u->sam_u->fin_s.sac_p);
+    u3l_log("fine: telemetry responses=%" PRIu64 " queue-depth=%u scry-cache=%u",
+            _fine_rsp_count_d, dep_w, sac_w);
+  }
+
+  if ( u3C.wag_w & u3o_verbose ) {
+    u3_noun sen = u3dc("scot", 'p', u3_ship_to_noun(pac_u->pre_u.sen_u));
+    c3_c* sen_c = u3r_string(sen);
+    u3l_log("fine: hear response from %s fra=%u path=/%s bytes=%u",
+            sen_c, fra_w, pat_c, pac_u->hun_u->len_w);
+    c3_free(sen_c);
+    u3z(sen);
+  }
+  c3_free(pat_c);
+
   u3_noun wir = u3nc(c3__fine, u3_nul);
   u3_noun cad = u3nt(c3__hear,
                      u3nc(c3n, u3_ames_encode_lane(pac_u->lan_u)),
@@ -1655,7 +1814,6 @@ _fine_hear_response(u3_pact* pac_u, c3_w cur_w)
     pac_u, _ames_hear_news, _ames_hear_bail);
 
   _ames_cap_queue(pac_u->sam_u);
-  _ames_pact_free(pac_u);
 }
 
 /* _ames_hear_ames(): hear ames packet.
