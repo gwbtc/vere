@@ -1,6 +1,14 @@
 /// @file
 
-#include "./io/ames.c"
+#include "vere.h"
+#include "io/ames/stun.h"
+
+//  Test-local declarations for STUN helpers implemented in io/ames/stun.c.
+void
+_stun_make_response(const c3_y req_y[20], const sockaddr_in* lan_u, c3_y buf_y[40]);
+
+c3_o
+_stun_find_xor_mapped_address(c3_y* buf_y, c3_w len_w, sockaddr_in* lan_u);
 
 /* _setup(): prepare for tests.
 */
@@ -16,45 +24,53 @@ _setup(void)
 static void
 _test_ames(void)
 {
-  u3_lane lan_u;
-  lan_u.pip_w = 0x7f000001;
-  lan_u.por_s = 12345;
+  sockaddr_in lan_u = {
+    .sin_family = AF_INET,
+    .sin_addr.s_addr = htonl(0x7f000001),
+    .sin_port = htons(12345),
+  };
 
-  u3_noun lan = u3_ames_encode_lane(lan_u);
-  u3_lane nal_u = u3_ames_decode_lane(u3k(lan));
-  u3_lane nal_u2 = u3_ames_decode_lane(lan);
+  u3_noun     lan   = u3_ames_encode_lane(lan_u);
+  sockaddr_in nal_u = u3_ames_decode_lane(u3k(lan));
+  sockaddr_in nal_u2 = u3_ames_decode_lane(lan);
 
-  if ( !(lan_u.pip_w == nal_u.pip_w && lan_u.por_s == nal_u.por_s) ) {
-    fprintf(stderr, "ames: lane fail (a)\r\n");
-    fprintf(stderr, "pip: %d, por: %d\r\n", nal_u.pip_w, nal_u.por_s);
+  if ( (lan_u.sin_addr.s_addr != nal_u.sin_addr.s_addr) ||
+       (lan_u.sin_port != nal_u.sin_port) ||
+       (lan_u.sin_addr.s_addr != nal_u2.sin_addr.s_addr) ||
+       (lan_u.sin_port != nal_u2.sin_port) )
+  {
+    fprintf(stderr, "ames: lane fail\r\n");
     exit(1);
   }
 }
 
 static c3_i
-_test_stun_addr_roundtrip(u3_lane* inn_u)
+_test_stun_addr_roundtrip(sockaddr_in* inn_u)
 {
-  c3_c    res_c[16] = {0};
-  c3_y    rep_y[40];
-  c3_y    req_y[20] = {0};
-  c3_i    ret_i     = 0;
+  c3_y req_y[20] = {0};
+  c3_y rep_y[40];
+  c3_i ret_i = 0;
 
-  u3_stun_make_response(req_y, inn_u, rep_y);
+  _stun_make_response(req_y, inn_u, rep_y);
 
-  u3_lane lan_u;
+  sockaddr_in lan_u;
 
-  if ( c3n == u3_stun_find_xor_mapped_address(rep_y, sizeof(rep_y), &lan_u) ) {
+  if ( c3n == _stun_find_xor_mapped_address(rep_y, sizeof(rep_y), &lan_u) ) {
     fprintf(stderr, "stun: failed to find addr in response\r\n");
     ret_i = 1;
   }
   else {
-    if ( lan_u.pip_w != inn_u->pip_w ) {
-      fprintf(stderr, "stun: addr mismatch %x %x\r\n", lan_u.pip_w, inn_u->pip_w);
+    if ( lan_u.sin_addr.s_addr != inn_u->sin_addr.s_addr ) {
+      fprintf(stderr, "stun: addr mismatch %x %x\r\n",
+                      ntohl(lan_u.sin_addr.s_addr),
+                      ntohl(inn_u->sin_addr.s_addr));
       ret_i = 1;
     }
 
-    if ( lan_u.por_s != inn_u->por_s ) {
-      fprintf(stderr, "stun: addr mismatch %u %u\r\n", lan_u.por_s, inn_u->por_s);
+    if ( lan_u.sin_port != inn_u->sin_port ) {
+      fprintf(stderr, "stun: port mismatch %u %u\r\n",
+                      ntohs(lan_u.sin_port),
+                      ntohs(inn_u->sin_port));
       ret_i = 1;
     }
   }
@@ -65,16 +81,20 @@ _test_stun_addr_roundtrip(u3_lane* inn_u)
 static c3_i
 _test_stun(void)
 {
-  u3_lane inn_u = { .pip_w = 0x7f000001, .por_s = 13337 };
-  c3_w    len_w = 256;
+  sockaddr_in inn_u = {
+    .sin_family = AF_INET,
+    .sin_addr.s_addr = htonl(0x7f000001),
+    .sin_port = htons(13337),
+  };
+  c3_w len_w = 256;
 
   while ( len_w-- ) {
     if ( _test_stun_addr_roundtrip(&inn_u) ) {
       return 1;
     }
 
-    inn_u.pip_w++;
-    inn_u.por_s++;
+    inn_u.sin_addr.s_addr = htonl(ntohl(inn_u.sin_addr.s_addr) + 1);
+    inn_u.sin_port = htons(ntohs(inn_u.sin_port) + 1);
   }
 
   return 0;
