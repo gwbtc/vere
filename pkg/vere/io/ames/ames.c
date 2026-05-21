@@ -1278,7 +1278,7 @@ _ames_send_many(u3_pact* pac_u, sockaddr_in lan_u[2], c3_o for_o)
   }
 
   for ( c3_w i = 0;
-        ( (i < 2) && _mesa_is_lane_zero(lan_u[i]) );
+        ( (i < 2) && (c3n == _mesa_is_lane_zero(lan_u[i])) );
         i++) {
     _ames_send(sam_u, lan_u[i], _ames_ref_hun_gain(pac_u->hun_u));
   }
@@ -1308,7 +1308,7 @@ _ames_lane_scry_cb(u3_pact* pac_u, u3_peer* per_u)
   }
   else {
     sam_u->sat_u.saw_d = 0;
-    sockaddr_in lan_u[2];
+    sockaddr_in lan_u[2] = {0};
     _ames_lane_from_peer(sam_u, per_u, lan_u);
     
     //  if there are lanes, send the packet on them; otherwise drop it
