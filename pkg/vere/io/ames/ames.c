@@ -618,18 +618,15 @@ _fine_etch_meow(u3_meow* mew_u, c3_y* buf_y)
   {
     c3_y num_y[4];
     c3_y len_y = _fine_bytes_word(mew_u->num_w);
+    c3_y num_wid_y;
 
     //  write number of fragments
     //
     c3_etch_word(num_y, mew_u->num_w);
-    memcpy(buf_y + cur_w, num_y, len_y);
+    num_wid_y = (0 != mew_u->siz_s) ? sizeof(mew_u->num_w) : len_y;
+    memcpy(buf_y + cur_w, num_y, num_wid_y);
 
-    if (mew_u->siz_s != 0) {
-      cur_w += sizeof(mew_u->num_w);
-    }
-    else {
-      cur_w += len_y;
-    }
+    cur_w += num_wid_y;
   }
 
   //  write response fragment data
@@ -663,7 +660,6 @@ _fine_etch_response(u3_pact* pac_u)
   pre_w = _ames_prel_size(&pac_u->hed_u);
   pur_w = _fine_purr_size(&pac_u->pur_u);
   pac_u->hun_u = _ames_ref_hun_new(HEAD_SIZE + pre_w + pur_w);
-
   //  skip the header until we know what the mug should be
   //
   cur_w = HEAD_SIZE;
@@ -1583,7 +1579,6 @@ _fine_hear_request(u3_pact* req_u, c3_w cur_w)
   c3_w  fra_w = res_u->pur_u.pep_u.fra_w;
   c3_w  lop_w = _fine_lop(fra_w);
   u3_weak pec = _fine_get_cache(sam_u, key, lop_w);
-
   //  already pending; drop
   //
   if ( FINE_PEND == pec ) {
