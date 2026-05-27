@@ -560,7 +560,7 @@ _boot_scry_cb(void* vod_p, u3_noun nun)
       } else {
         // Trying to boot old ship after breach
         u3l_log("boot: failed: double-boot detected, refusing to boot %s\r\n"
-                "you are trying to boot an existing ship from a keyfile,"
+                "you are trying to boot an existing ship from a keyfile, "
                 "resume the latest version of the ship or breach\r\n"
                 "see https://docs.urbit.org/user-manual/id/guide-to-resets",
                 who_c);
@@ -1155,13 +1155,13 @@ u3_pier_save(u3_pier* pir_u)
 /* u3_pier_meld(): globally deduplicate persistent state.
 */
 void
-u3_pier_meld(u3_pier* pir_u)
+u3_pier_meld(u3_pier* pir_u, u3_noun dat)
 {
 #ifdef VERBOSE_PIER
   fprintf(stderr, "pier: (%" PRIu64 "): meld: plan\r\n", pir_u->god_u->eve_d);
 #endif
 
-  u3_lord_meld(pir_u->god_u);
+  u3_lord_meld(pir_u->god_u, dat);
 }
 
 /* u3_pier_pack(): defragment persistent state.

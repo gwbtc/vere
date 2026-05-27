@@ -124,6 +124,8 @@ static uint8_t Sigstk[SIGSTKSZ];
 #include "veh_handler.h"
 #endif
 
+static c3_w u3m_Ford_fresh_road_depth_w = 0;
+
 #if 0
 /* _cm_punt(): crudely print trace.
 */
@@ -285,14 +287,7 @@ _cm_stack_unwind(void)
   u3_noun tax;
 
   while ( u3R != &(u3H->rod_u) ) {
-    u3_noun yat = u3R->bug.tax;
-    u3m_fall();
-    yat = u3a_take(yat);
-    //  pop the stack
-    //
-    u3a_drop_heap(u3R->cap_p, u3R->ear_p);
-    u3R->cap_p = u3R->ear_p;
-    u3R->ear_p = 0;
+    u3_noun yat = u3m_love(u3R->bug.tax);
 
     u3R->bug.tax = u3kb_weld(yat, u3R->bug.tax);
   }
@@ -405,9 +400,7 @@ _cm_signal_deep(void)
   // go utterly haywire.
   //
   if ( 0 == u3H->rod_u.bug.mer ) {
-    u3H->rod_u.bug.mer = u3i_string(
-      "emergency buffer with sufficient space to cons the trace and bail"
-    );
+    u3H->rod_u.bug.mer = u3i_tape("emergency buffer");
   }
 
   u3t_boot();
@@ -1224,13 +1217,12 @@ u3m_hate(c3_w pad_w)
   c3_w fag_w = u3R->how.fag_w;
   u3m_leap(pad_w);
 
+  u3R->bug.mer = u3i_tape("emergency buffer");
+
   //  inherit forward-flowing flags
   //
   u3R->how.fag_w |= (fag_w & u3a_flag_cash);
 
-  u3R->bug.mer = u3i_string(
-    "emergency buffer with sufficient space to cons the trace and bail"
-  );
 }
 
 //  RETAINS `now`.
@@ -1342,6 +1334,16 @@ u3m_timer_pop(void)
   _m_renew_now();
 }
 
+c3_w
+u3m_road_depth(void)
+{
+  c3_w dep_w = 0;
+  for (u3a_road* r_u = u3R; r_u->par_p; r_u = u3to(u3a_road, r_u->par_p)) {
+    dep_w++;
+  }
+  return dep_w;
+}
+
 /* u3m_love(): return product from leap.
 */
 u3_noun
@@ -1384,6 +1386,19 @@ u3m_love(u3_noun pro)
   u3R->cap_p = u3R->ear_p;
   u3R->ear_p = 0;
 
+  //  free stale ford caches
+  //  NB: apparently this needs to be done after u3h_take, otherwise double
+  //  frees are possible, resulting in bail: foul
+  //
+  {
+    c3_w dep_w = u3m_road_depth();
+    if ( dep_w < u3m_Ford_fresh_road_depth_w ) {
+      u3h_free(u3R->cax.for_p);
+      u3R->cax.for_p = u3h_new_cache(u3C.per_w);
+      u3m_Ford_fresh_road_depth_w = dep_w;
+    }
+  }
+
   //  integrate junior caches
   //
   u3j_reap(jed_u);
@@ -1392,43 +1407,6 @@ u3m_love(u3_noun pro)
   u3z_reap(u3z_memo_ford, for_p);
 
   return pro;
-}
-
-/* u3m_warm(): return product from leap without promoting state
-*/
-u3_noun
-u3m_warm(u3_noun pro)
-{
-  c3_o tim_o = u3du(u3R->tim);
-  u3m_fall();
-  if ( _(tim_o) ) _m_renew_now();
-  pro = u3a_take(pro);
-
-  //  pop the stack
-  //
-  u3a_drop_heap(u3R->cap_p, u3R->ear_p);
-  u3R->cap_p = u3R->ear_p;
-  u3R->ear_p = 0;
-  return pro;
-}
-
-/* u3m_pour(): return error ball from leap, promoting the state if the error
- * is deterministic
-*/
-u3_noun
-u3m_pour(u3_noun why)
-{
-  u3_assert(c3y == u3du(why));
-  switch (u3h(why)) {
-    case 0:
-    case 1: {
-      return u3m_love(why);
-    } break;
-
-    default: {
-      return u3m_warm(why);
-    } break;
-  }
 }
 
 /* u3m_golf(): record cap_p length for u3m_flog().
@@ -1512,6 +1490,9 @@ u3m_soft_top(c3_w    mil_w,                     //  timer ms
    */
   _cm_signal_deep();
 
+  u3_assert(u3R == &u3H->rod_u);
+  u3m_Ford_fresh_road_depth_w = 0;
+
   if ( 0 != (sig_l = rsignal_setjmp(u3_Signal)) ) {
     //  reinitialize trace state
     //
@@ -1561,7 +1542,7 @@ u3m_soft_top(c3_w    mil_w,                     //  timer ms
   else {
     /* Overload the error result.
     */
-    pro = u3m_pour(why);
+    pro = u3m_love(why);
   }
 
   /* Revert to external signal regime.
@@ -1692,7 +1673,7 @@ u3m_soft_cax(u3_funq fun_f,
         } break;
 
         case 3: {                             //  failure; rebail w/trace
-          u3_noun yod = u3m_warm(u3t(why));
+          u3_noun yod = u3m_love(u3t(why));
 
           u3m_bail
             (u3nt(3,
@@ -1795,7 +1776,7 @@ u3m_soft_run(u3_noun gul,
         } break;
 
         case 3: {                             //  failure; rebail w/trace
-          u3_noun yod = u3m_warm(u3t(why));
+          u3_noun yod = u3m_love(u3t(why));
 
           u3m_bail
             (u3nt(3,
@@ -1804,7 +1785,7 @@ u3m_soft_run(u3_noun gul,
         } break;
 
         case 4: {                             //  meta-bail
-          u3m_bail(u3m_pour(u3t(why)));
+          u3m_bail(u3m_love(u3t(why)));
         } break;
       }
     }
@@ -1864,7 +1845,7 @@ u3m_soft_esc(u3_noun ref, u3_noun sam)
     /* Push the error back up to the calling context - not the run we
     ** are in, but the caller of the run, matching pure nock semantics.
     */
-    u3m_bail(u3nc(4, u3m_pour(why)));
+    u3m_bail(u3nc(4, u3m_love(why)));
   }
 
   /* Release the sample.  Note that we used it above, but in a junior
