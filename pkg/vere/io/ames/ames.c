@@ -1116,6 +1116,34 @@ _ames_ef_send(u3_ames* sam_u, sockaddr_in lan_u, u3_noun pac)
   u3z(pac);
 }
 
+static void
+_ames_hear_news(u3_ovum* egg_u, u3_ovum_news new_e)
+{
+  u3_pact* pac_u = egg_u->ptr_v;
+
+  if (  (u3_ovum_exit == new_e)
+     || (u3_ovum_drop == new_e) )
+  {
+    _ames_pact_free(pac_u);
+  }
+  else if ( u3_ovum_done == new_e ) {
+    u3_ames* sam_u = pac_u->sam_u;
+
+    if ( c3n == pac_u->for_o) {
+      c3_o dir_o = (pac_u->pre_u.rog_d == 0) ? c3y : c3n;
+      u3_peer* per_u = _mesa_gut_peer(sam_u->mes_u, pac_u->pre_u.sen_u);
+      if (c3n == dir_o) {
+        if ( c3n == per_u->lam_o )
+          per_u->dan_u = u3_ames_chub_to_lane(pac_u->pre_u.rog_d);
+        per_u->ind_u.her_d = pac_u->her_d;
+      } else {
+        per_u->dir_u.her_d = pac_u->her_d;
+      }
+    }
+    _ames_pact_free(pac_u);
+  }
+}
+
 /* _ames_cap_queue(): cap ovum queue at QUEUE_MAX, dropping oldest packets.
 */
 static void
@@ -1128,6 +1156,9 @@ _ames_cap_queue(u3_ames* sam_u)
     u3_ovum* nex_u = egg_u->nex_u;
 
     if ( c3__hear == u3h(egg_u->cad) ) {
+      //  u3_auto_drop() doesn't notify on self-drops; free packet context here.
+      //
+      _ames_hear_news(egg_u, u3_ovum_drop);
       u3_auto_drop(&sam_u->mes_u->car_u, egg_u);
       sam_u->sat_u.dop_d++;
 
@@ -1144,30 +1175,6 @@ _ames_cap_queue(u3_ames* sam_u)
      && !(sam_u->sat_u.dop_d % 1000) )
   {
     u3l_log("ames: packet dropped (%" PRIu64 " total)", sam_u->sat_u.dop_d);
-  }
-}
-
-static void
-_ames_hear_news(u3_ovum* egg_u, u3_ovum_news new_e)
-{
-  u3_pact* pac_u = egg_u->ptr_v;
-  u3_ames* sam_u = pac_u->sam_u;
-  if ( u3_ovum_exit == new_e ) {
-    _ames_pact_free(pac_u);
-  }
-  else if ( u3_ovum_done == new_e ) {
-    if ( c3n == pac_u->for_o) {
-      c3_o dir_o = (pac_u->pre_u.rog_d == 0) ? c3y : c3n;
-      u3_peer* per_u = _mesa_gut_peer(sam_u->mes_u, pac_u->pre_u.sen_u);
-      if (c3n == dir_o) {
-        if ( c3n == per_u->lam_o )
-          per_u->dan_u = u3_ames_chub_to_lane(pac_u->pre_u.rog_d);
-        per_u->ind_u.her_d = pac_u->her_d;
-      } else {
-        per_u->dir_u.her_d = pac_u->her_d;
-      }
-    }
-    _ames_pact_free(pac_u);
   }
 }
 
@@ -1650,7 +1657,6 @@ _fine_hear_response(u3_pact* pac_u, c3_w cur_w)
     pac_u, _ames_hear_news, _ames_hear_bail);
 
   _ames_cap_queue(pac_u->sam_u);
-  _ames_pact_free(pac_u);
 }
 
 /* _ames_hear_ames(): hear ames packet.
