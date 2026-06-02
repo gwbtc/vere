@@ -91,6 +91,7 @@
       typedef struct _u3_moat {
         uv_pipe_t        pyp_u;             //  input stream
         u3_moor_bail     bal_f;             //  error response function
+        c3_w             fag_w;
         void*            ptr_v;             //  callback pointer
         u3_moor_poke     pok_f;             //  action function
         u3_mess          mes_u;             //  message in progress
@@ -104,6 +105,7 @@
       typedef struct _u3_mojo {
         uv_pipe_t        pyp_u;             //  output stream
         u3_moor_bail     bal_f;             //  error response function
+        c3_w             fag_w;
         void*            ptr_v;             //  callback pointer
       } u3_mojo;
 
@@ -111,6 +113,7 @@
       typedef struct _u3_moor {
         uv_pipe_t        pyp_u;             //  duplex stream
         u3_moor_bail     bal_f;             //  error response function
+        c3_w             fag_w;
         void*            ptr_v;             //  callback pointer
         u3_moor_poke     pok_f;             //  action function
         u3_mess          mes_u;             //  message in progress
@@ -126,6 +129,14 @@
         c3_c*            nam_c;
         struct _u3_dent* nex_u;
       } u3_dent;
+
+    /* u3_array: dynamically sized array
+    */
+      typedef struct _u3_array {
+        c3_y* buf_y;
+        c3_d  len_d;
+        c3_d  cap_d;
+      } u3_array;
 
     /* u3_dire: simple directory state.
     */
@@ -1027,7 +1038,7 @@
       /* u3_lord_meld(): globally deduplicate persistent state.
       */
         void
-        u3_lord_meld(u3_lord* god_u);
+        u3_lord_meld(u3_lord* god_u, u3_noun dat);
 
       /* u3_lord_pack(): defragment persistent state.
       */
@@ -1291,7 +1302,7 @@
       /* u3_pier_meld(): globally deduplicate persistent state.
       */
         void
-        u3_pier_meld(u3_pier* pir_u);
+        u3_pier_meld(u3_pier* pir_u, u3_noun dat);
 
       /* u3_pier_pack(): defragment persistent state.
       */
@@ -1479,6 +1490,6 @@
       /* u3_meld_all(): canonicalize persistent nouns and compact state.
       */
         c3_w
-        u3_meld_all(FILE*);
+        u3_meld_all(FILE*, c3_o, c3_o);
 
 #endif /* ifndef U3_VERE_H */
