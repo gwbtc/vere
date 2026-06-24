@@ -44,8 +44,10 @@ _ames_lamp_lane(u3_auto* car_u, u3_ship her_u, sockaddr_in* lan_u)
   if (NULL == per_u) return c3n;
 
   if (c3n == per_u->lam_o) {
-    u3l_log("fatal: peer is not lamp");
-    u3_king_bail();
+    if ( u3C.wag_w & u3o_verbose ) {
+      u3l_log("ames: peer is not lamp");
+    }
+    return c3n;
   }
 
   if ( c3n == u3_Host.ops_u.net ) {
@@ -390,4 +392,3 @@ _ames_ef_fief(u3_lamp_state* lam_u, u3_noun fef)
   }
   u3z(_fef);
 }
-
