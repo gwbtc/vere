@@ -204,21 +204,12 @@ pub fn build(b: *std.Build) !void {
     const tracy_callstack = b.option(bool, "tracy-callstack", "Enable Tracy callstack capture") orelse false;
     const tracy_no_exit = b.option(bool, "tracy-no-exit", "Wait for profiler connection before exiting") orelse false;
 
-    // Parse short git rev
-    var file = try std.fs.cwd().openFile(".git/logs/HEAD", .{});
-    defer file.close();
-    var buf: [4096]u8 = undefined;
-    var reader = file.reader(&buf);
-    var last_line: [4096]u8 = undefined;
-    while (reader.interface.takeDelimiterInclusive('\n')) |line| {
-        if (line.len > 0)
-            last_line = buf;
-    } else |err| if (err != error.EndOfStream) return err;
-    const git_rev = buf[41..48];
+    const git_rev_cmd = b.run(&.{ "git", "rev-parse", "--short=7", "HEAD" });
+    const git_rev = std.mem.trim(u8, git_rev_cmd, &std.ascii.whitespace);
 
     // Binary version
     const version = if (!release)
-        VERSION ++ "-" ++ git_rev
+        b.fmt("{s}-{s}", .{ VERSION, git_rev })
     else
         VERSION;
 
