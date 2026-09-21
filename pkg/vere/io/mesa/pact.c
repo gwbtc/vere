@@ -1158,7 +1158,10 @@ _test_cmp_name(u3_mesa_name* hav_u, u3_mesa_name* ned_u)
 {
   c3_i ret_i = 0;
 
-  cmp_buffer(her_u, sizeof(ned_u->her_u), "name: ships differ");
+  if ( c3n == u3_ships_equal(hav_u->her_u, ned_u->her_u) ) {
+    fprintf(stderr, "mesa test cmp name: ships differ\r\n");
+    ret_i = 1;
+  }
 
   cmp_scalar(rif_w, "name: rifts", "%u");
   cmp_scalar(boq_y, "name: bloqs", "%u");
@@ -1409,7 +1412,9 @@ _test_make_head(void* ptr_v, u3_mesa_head* hed_u)
 static void
 _test_make_name(void* ptr_v, c3_s pat_s, u3_mesa_name* nam_u)
 {
-  _test_rand_bytes(ptr_v, 16, (c3_y*)nam_u->her_u);
+  c3_y her_y[16];
+  _test_rand_bytes(ptr_v, sizeof(her_y), her_y);
+  nam_u->her_u = u3_ship_of_bytes(sizeof(her_y), her_y);
   nam_u->rif_w = _test_rand_word(ptr_v);
 
   nam_u->pat_s = _test_rand_gulf_w(ptr_v, pat_s);
@@ -1525,7 +1530,7 @@ _test_sift_page()
 
   {
     u3_noun her = u3v_wish("~hastuc-dibtux");
-    u3r_chubs(0, 2, nam_u->her_u, her);
+    nam_u->her_u = u3_ship_of_noun(her);
     u3z(her);
   }
   nam_u->rif_w = 15;
