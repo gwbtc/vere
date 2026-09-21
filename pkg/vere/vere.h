@@ -650,6 +650,7 @@
           struct {
             u3_pico*       ent_u;
             u3_pico*       ext_u;
+            c3_w           dep_w;
           } pec_u;
           void*            sop_p;               //  slog stream data
           void           (*sog_f)               //  slog stream callback
