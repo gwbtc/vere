@@ -935,6 +935,7 @@ c3_c*
 mesa_sift_pact_from_buf(u3_mesa_pact *pac_u, c3_y* buf_y, c3_w len_w) {
   u3_sifter sif_u;
   sifter_init(&sif_u, buf_y, len_w);
+
   _mesa_sift_pact(&sif_u, pac_u);
   if ( sif_u.rem_w && !sif_u.err_c ) {
     _sift_fail(&sif_u, "trailing bytes");
