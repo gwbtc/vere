@@ -151,6 +151,8 @@ struct _u3_hws {
   c3_l                  coq_l;          // connection id
   c3_l                  seq_l;          // request id
   c3_c                  key_c[29];      // sec-websocket-key buffer
+  uv_timer_t*           kip_u;          // keepalive timer (open sessions)
+  c3_o                  pin_o;          // keepalive ping unanswered
 };
 //
 
@@ -177,6 +179,15 @@ static void _http_ws_disconnect(u3_hws* web_u);
 static void _http_ws_plan_event(u3_hws* web_u, u3_noun event);
 static void _http_ws_close_all(u3_httd* htd_u);
 static void _http_ws_detach_request(u3_hreq* req_u);
+static void _http_ws_free(u3_hws* web_u);
+static void _http_ws_keep_start(u3_hws* web_u);
+
+//  websocket logging with -v only: what's routine (a bad handshake from
+//  some client, a keepalive closing a dead one, a message for a socket
+//  that just closed). arvo handing us something malformed always prints
+//
+#define _http_ws_vlog(...) \
+  do { if ( u3C.wag_w & u3o_verbose ) { u3l_log(__VA_ARGS__); } } while (0)
 //
 
 
@@ -1808,7 +1819,7 @@ _http_rec_accept(h2o_handler_t* han_u, h2o_req_t* rec_u)
         req_u->sat_e = u3_rsat_ripe;
 
         // Log and respond 400.
-        u3l_log("http: invalid websocket handshake");
+        _http_ws_vlog("http: invalid websocket handshake");
         c3_c* msg_c = "bad websocket handshake";
         h2o_send_error_generic(rec_u, 400, msg_c, msg_c, 0);
 
@@ -2812,16 +2823,21 @@ _http_ws_accept(u3_hws* web_u)
   if ( 0 == web_u->woc_u ) {
     c3_c* msg_c = "websocket upgrade failed";
     h2o_send_error_generic(req_u->rec_u, 500, msg_c, msg_c, 0);
-    web_u->req_u = req_u;
     req_u->wsu_u = 0;
     web_u->sat_e = u3_hws_closed;
-    _http_ws_unlink(web_u);
-    c3_free(web_u);
+    _http_ws_free(web_u);
     return;
   }
 
   web_u->sat_e = u3_hws_open;
-  req_u->wsu_u = web_u;
+
+  //  the request's done with the session: it only needs it while the
+  //  handshake is pending (_http_ws_detach_request). a pointer kept here
+  //  would dangle if the session closed before h2o disposed the request
+  //
+  req_u->wsu_u = 0;
+
+  _http_ws_keep_start(web_u);
 
   // u3l_log("http: ws proceed scheduled wid=%u conn=%p", web_u->wid_l, (void*)web_u->woc_u);
 
@@ -2854,8 +2870,7 @@ _http_ws_reject(u3_hws* web_u)
     h2o_send_error_generic(req_u->rec_u, 403, msg_c, msg_c, 0);
   }
 
-  _http_ws_unlink(web_u);
-  c3_free(web_u);
+  _http_ws_free(web_u);
 }
 
 /* _http_ws_send_message(): serialize and send websocket message to client.
@@ -2923,7 +2938,13 @@ _http_ws_send_message(u3_hws* web_u, u3_noun msg)
     c3_free(buf_y);
   }
 
-  h2o_websocket_proceed(web_u->woc_u);
+  //  not before the 101 is out: h2o's upgrade sets the socket when it's
+  //  done (on_complete), and proceeds then, sending what we've queued.
+  //  proceeding now would dereference a NULL socket
+  //
+  if ( 0 != web_u->woc_u->sock ) {
+    h2o_websocket_proceed(web_u->woc_u);
+  }
   u3z(msg);
   return c3y;
 }
@@ -3064,7 +3085,7 @@ _http_ef_http_server(u3_httd* htd_u,
       u3l_log("http: invalid websocket id");
     }
     else if ( 0 == (web_u = _http_ws_find(htd_u, wid_w)) ) {
-      u3l_log("http: unknown websocket id %u", wid_w);
+      _http_ws_vlog("http: unknown websocket id %u", wid_w);
     }
     else {
       u3_noun typ = u3h(res);
@@ -3665,9 +3686,129 @@ _http_ws_detach_request(u3_hreq* req_u)
   if ( 0 != web_u->req_u && web_u->req_u == req_u ) {
     web_u->req_u = 0;
     web_u->sat_e = u3_hws_closed;
-    _http_ws_unlink(web_u);
-    c3_free(web_u);
+    _http_ws_free(web_u);
   }
+}
+
+/* websocket keepalive: a client that vanished without closing (a phone
+** that lost its network, say) leaves a half-open connection that nothing
+** else notices, and an app that thinks it's still there. so every
+** _http_ws_keep_ms we PING; if nothing at all has come from the client
+** since the last tick, we close the session and tell %eyre. the same
+** tick ends a close handshake the client never finished.
+*/
+#define _http_ws_keep_ms 30000
+
+static void
+_http_ws_keep_free(uv_handle_t* han_u)
+{
+  c3_free(han_u);
+}
+
+static void
+_http_ws_keep_stop(u3_hws* web_u)
+{
+  if ( 0 == web_u->kip_u ) {
+    return;
+  }
+
+  uv_timer_t* tim_u = web_u->kip_u;
+  web_u->kip_u = 0;
+
+  //  the handle outlives the session: it's freed when libuv's done
+  //
+  tim_u->data = 0;
+  uv_timer_stop(tim_u);
+  uv_close((uv_handle_t*)tim_u, _http_ws_keep_free);
+}
+
+/* _http_ws_free(): stop, unlink and free a session. the h2o connection,
+** if any, must already be closed or handed off.
+*/
+static void
+_http_ws_free(u3_hws* web_u)
+{
+  _http_ws_keep_stop(web_u);
+  _http_ws_unlink(web_u);
+  c3_free(web_u);
+}
+
+/* _http_ws_kill(): close a session now, from outside any h2o callback:
+** its connection too, and tell %eyre if it thinks it's open.
+*/
+static void
+_http_ws_kill(u3_hws* web_u)
+{
+  if ( u3_hws_open == web_u->sat_e ) {
+    _http_ws_plan_event(web_u, u3nc(u3i_string("disconnect"), u3_nul));
+  }
+
+  web_u->sat_e = u3_hws_closed;
+
+  if ( 0 != web_u->woc_u ) {
+    h2o_websocket_conn_t* woc_u = web_u->woc_u;
+    web_u->woc_u = 0;
+    woc_u->data = 0;
+    h2o_websocket_close(woc_u);
+  }
+
+  _http_ws_free(web_u);
+}
+
+static void
+_http_ws_keep_cb(uv_timer_t* tim_u)
+{
+  u3_hws* web_u = tim_u->data;
+
+  if ( 0 == web_u ) {
+    return;
+  }
+
+  //  the 101 is still being written: h2o's upgrade holds the connection
+  //  (and calls back with it) until it's done. closing it now would leave
+  //  that callback a freed connection
+  //
+  if ( (0 != web_u->woc_u) && (0 == web_u->woc_u->sock) ) {
+    return;
+  }
+
+  if ( c3y == web_u->pin_o ) {
+    _http_ws_vlog("http: ws wid=%u silent for %us, closing",
+            web_u->wid_l, _http_ws_keep_ms / 1000);
+    _http_ws_kill(web_u);
+    return;
+  }
+
+  web_u->pin_o = c3y;
+
+  if ( (u3_hws_open == web_u->sat_e) && (0 != web_u->woc_u) ) {
+    struct wslay_event_msg png_u = {
+      .opcode = WSLAY_PING,
+      .msg = 0,
+      .msg_length = 0
+    };
+
+    if ( (0 == wslay_event_queue_msg(web_u->woc_u->ws_ctx, &png_u))
+       && (0 != web_u->woc_u->sock) )
+    {
+      h2o_websocket_proceed(web_u->woc_u);
+    }
+  }
+}
+
+static void
+_http_ws_keep_start(u3_hws* web_u)
+{
+  if ( 0 != web_u->kip_u ) {
+    return;
+  }
+
+  web_u->kip_u = c3_malloc(sizeof(*web_u->kip_u));
+  uv_timer_init(u3L, web_u->kip_u);
+  web_u->kip_u->data = web_u;
+  web_u->pin_o = c3n;
+  uv_timer_start(web_u->kip_u, _http_ws_keep_cb,
+                 _http_ws_keep_ms, _http_ws_keep_ms);
 }
 
 /* _http_ws_handshake(): handle websocket handshake request.
@@ -3697,6 +3838,8 @@ _http_ws_handshake(u3_hreq* req_u, u3_noun req, const c3_c* client_key)
   web_u->seq_l = req_u->seq_l;
   web_u->req_u = req_u;
   web_u->woc_u = 0;
+  web_u->kip_u = 0;
+  web_u->pin_o = c3n;    //  c3y is 0: calloc'd would read as unanswered
 
   //  stash the Sec-WebSocket-Key so h2o can finalize the upgrade later
   //
@@ -3752,9 +3895,20 @@ _http_ws_disconnect(u3_hws* web_u)
     return;
   }
 
+  //  close properly: queue a close frame and let the handshake finish.
+  //  h2o then calls back with NULL, where we close its connection and free
+  //  the session. (h2o_websocket_close here sent no close frame, and left
+  //  the session linked and allocated for good.) the keepalive ends it if
+  //  the client never answers
+  //
   if ( (u3_hws_open == web_u->sat_e) && (0 != web_u->woc_u) ) {
     web_u->sat_e = u3_hws_closing;
-    h2o_websocket_close(web_u->woc_u);
+    wslay_event_queue_close(web_u->woc_u->ws_ctx,
+                            WSLAY_CODE_NORMAL_CLOSURE, NULL, 0);
+
+    if ( 0 != web_u->woc_u->sock ) {
+      h2o_websocket_proceed(web_u->woc_u);
+    }
   }
 }
 
@@ -3771,22 +3925,43 @@ _http_ws_message_cb(h2o_websocket_conn_t *conn,
     return;
   }
 
+  //  h2o's done with the connection (closed, failed, or the close
+  //  handshake finished): it's ours to close (h2o frees nothing itself).
+  //  tell %eyre unless it closed it, or already knows
+  //
   if ( NULL == arg ) {
-    if ( u3_hws_closed != web_u->sat_e ) {
-      web_u->sat_e = u3_hws_closed;
+    if ( u3_hws_open == web_u->sat_e ) {
       _http_ws_plan_event(web_u, u3nc(u3i_string("disconnect"), u3_nul));
     }
 
-    _http_ws_unlink(web_u);
-    c3_free(web_u);
+    web_u->sat_e = u3_hws_closed;
+    web_u->woc_u = 0;
+    conn->data = 0;
+    h2o_websocket_close(conn);
+
+    _http_ws_free(web_u);
     return;
   }
 
+  //  anything from the client answers the keepalive
+  //
+  web_u->pin_o = c3n;
+
+  //  the client's closing: wslay has queued our reply. h2o calls back with
+  //  NULL once it's sent
+  //
   if ( WSLAY_CONNECTION_CLOSE == arg->opcode ) {
-    if ( u3_hws_closed != web_u->sat_e ) {
-      web_u->sat_e = u3_hws_closed;
+    if ( u3_hws_open == web_u->sat_e ) {
       _http_ws_plan_event(web_u, u3nc(u3i_string("disconnect"), u3_nul));
     }
+    web_u->sat_e = u3_hws_closed;
+    return;
+  }
+
+  //  control frames are ours: wslay answers a PING itself, and a PONG only
+  //  answers the keepalive
+  //
+  if ( (WSLAY_PING == arg->opcode) || (WSLAY_PONG == arg->opcode) ) {
     return;
   }
 
