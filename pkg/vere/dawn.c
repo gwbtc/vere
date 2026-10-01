@@ -331,12 +331,12 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
 #ifdef unsafe_dawn
   {
     u3_noun put = _dawn_feed_to_point(u3k(feed));
-    u3_noun pot = _dawn_need_unit(put, "boot: keyfile missing keys");
+    u3_noun pot = _dawn_need_unit(put, "boot: feed has no usable keys; check the -G feed or -k key file");
     pon = u3nc(u3nc(u3k(ship), pot), u3_nul);
     
     fed = _dawn_lift_feed(u3k(feed));
     if ( u3_nul == fed ) {
-      u3l_log("boot: keyfile missing keys");
+      u3l_log("boot: feed has no usable keys; check the -G feed or -k key file");
       _dawn_fail(ship, rank, u3_nul);
       return u3_none;
     }
@@ -431,7 +431,9 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
   //  (list ship): %saxo sponsorship chain
   //
   {
-    u3l_log("boot: retrieving sponsorship chain");
+    if ( u3C.wag_w & u3o_verbose ) {
+      u3l_log("boot: retrieving sponsorship chain");
+    }
     u3_noun who = u3dc("scot", 'p', u3k(pos));
     c3_c* who_c = u3r_string(who);
     sprintf(url_c, "%s/_~_/=saxo=/j/%s",
@@ -441,7 +443,7 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
     // shouldn't occur as saxo includes the ship itself
     //
     if ( u3_nul == sax ) {
-      u3l_log("boot: sponsorship chain empty");
+      u3l_log("boot: gateway returned an empty sponsorship chain; check the -W/--gateway URL");
       _dawn_fail(ship, rank, u3_nul);
       return u3_none;
     }
