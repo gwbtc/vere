@@ -443,7 +443,7 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
     // shouldn't occur as saxo includes the ship itself
     //
     if ( u3_nul == sax ) {
-      u3l_log("boot: gateway returned an empty sponsorship chain; check the -W/--gateway URL");
+      u3l_log("boot: gateway returned an empty sponsorship chain; check the --gateway URL");
       _dawn_fail(ship, rank, u3_nul);
       return u3_none;
     }
