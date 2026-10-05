@@ -136,11 +136,14 @@ jobs:
             [ "$(curl -fsS --max-time 5 "http://localhost:${HTTP_PORT}/~/host" 2>/dev/null)" = "$SHIP" ]
           }
 
-          vere_pid() {
-            local pid
-            pid=$(cat "$PIER/.vere.lock" 2>/dev/null || true)
-            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-              echo "$pid"
+          # pid of the pier's king process. .vere.lock holds the worker's
+          # pid, not the king's, so find the worker by its command line
+          # and take its parent
+          king_pid() {
+            local serf
+            serf=$(pgrep -f -- "work --snap-dir $PIER_PATH/$PIER " | head -n 1 || true)
+            if [ -n "$serf" ]; then
+              ps -o ppid= -p "$serf" | tr -d ' '
             fi
           }
 
@@ -163,7 +166,7 @@ jobs:
                 echo "$SHIP is up."
                 return 0
               fi
-              if [ "$i" -gt 2 ] && [ -z "$(vere_pid)" ]; then
+              if [ "$i" -gt 6 ] && [ -z "$(king_pid)" ]; then
                 echo "ERROR: vere exited."
                 break
               fi
@@ -179,7 +182,7 @@ jobs:
           # stop [force]: SIGTERM vere, wait up to 2 minutes for it to exit
           stop() {
             local pid
-            pid=$(vere_pid)
+            pid=$(king_pid)
             if [ -n "$pid" ]; then
               kill "$pid"
               for i in $(seq 1 60); do
@@ -195,6 +198,11 @@ jobs:
               fi
               # let the session's shell take the terminal back
               sleep 2
+            fi
+            # never boot a second vere on a pier that is still running
+            if is_up; then
+              echo "ERROR: $SHIP is still serving http; no vere process found to stop."
+              return 1
             fi
           }
 
@@ -230,14 +238,18 @@ jobs:
               rm -f gw-vere.old gw-vere.docked-old
               ;;
             rollback)
-              stop force
+              stop force || true
               if [ -f gw-vere.docked-old ]; then
                 ./gw-vere.docked-old dock "./$PIER"
                 rm -f gw-vere.docked-old
               fi
               [ -f gw-vere.old ] && mv -f gw-vere.old gw-vere
-              start "$PIER_PATH/$PIER/.run"
-              wait_up
+              if is_up; then
+                echo "$SHIP is still up; leaving it running."
+              else
+                start "$PIER_PATH/$PIER/.run"
+                wait_up
+              fi
               ;;
           esac
           EOF
