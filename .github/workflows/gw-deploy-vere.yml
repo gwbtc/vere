@@ -1,0 +1,271 @@
+name: Deploy vere to sponsor ship
+on:
+  push:
+    branches:
+      - gw/next/kelvin/408
+    paths:
+      - 'pkg/**'
+      - 'ext/**'
+
+# never cancel a deploy midway; queue the next one instead
+concurrency:
+  group: gw-deploy-vere
+  cancel-in-progress: false
+
+env:
+  URCRYPT_BRANCH: gw/cmp-pub
+  SHIP:      "~${{ vars.SPONSOR_URBIT_ID_NO_TILDE }}"
+  SCREEN:    sponsor
+  SHIP_IP:   ${{ vars.SPONSOR_IP }}
+  SHIP_HOST: root@${{ vars.SPONSOR_IP }}
+  PIER_PATH: /root
+  PIER:      sponsor
+  # repo-level variables
+  HTTP_PORT: ${{ vars.SPONSOR_HTTP_PORT }}
+  AMES_PORT: ${{ vars.SPONSOR_AMES_PORT }}
+
+jobs:
+  # =============================================================
+  # Build gw-vere for linux x86_64
+  # =============================================================
+  build-vere:
+    name: "Build vere: linux-x86_64"
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Set up Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          cache-key: vere-x86_64-linux-musl
+
+      - name: Checkout gwbtc/urcrypt
+        uses: actions/checkout@v4
+        with:
+          repository: gwbtc/urcrypt
+          ref: ${{ env.URCRYPT_BRANCH }}
+          path: gwbtc-urcrypt
+          token: ${{ secrets.GH_PAT_RELEASE || github.token }}
+
+      # ext/urcrypt/build.zig.zon expects urcrypt beside the vere checkout
+      - name: Prepare urcrypt
+        run: |
+          rm -f gwbtc-urcrypt/build.zig gwbtc-urcrypt/build.zig.zon
+          ln -sf $(pwd)/gwbtc-urcrypt $(pwd)/urcrypt
+
+      - name: Checkout gwbtc/vere
+        uses: actions/checkout@v4
+        with:
+          path: gwbtc-vere
+
+      - name: Build vere
+        run: |
+          cd gwbtc-vere
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt/3..."
+            zig build -Doptimize=ReleaseFast -Dunsafe-dawn=true -Dtarget=x86_64-linux-musl && break
+            [ $attempt -eq 3 ] && exit 1
+            sleep 15
+          done
+          VERE_BIN=$(find zig-out -type f -executable 2>/dev/null | head -1)
+          [ -z "$VERE_BIN" ] && VERE_BIN=$(find zig-out -type f \( -name "urbit" -o -name "vere" \) 2>/dev/null | head -1)
+          cp "$VERE_BIN" ../gw-vere
+          cd ..
+          chmod +x ./gw-vere
+          ./gw-vere --version
+
+      - name: Upload vere
+        uses: actions/upload-artifact@v4
+        with:
+          name: gw-vere-linux-x86_64
+          path: ./gw-vere
+
+  # =============================================================
+  # Swap gw-vere under the sponsor ship
+  #
+  # Flow:
+  #   1. Upload the new binary as gw-vere.new, check the sponsor is up
+  #   2. Shut the sponsor down, replace gw-vere, boot the pier with it
+  #   3. If the boot succeeds: shut down, dock gw-vere, reboot from .run
+  #   4. If anything fails after shutdown: restore the old gw-vere and
+  #      the old docked binary, reboot from .run
+  #
+  # The ship runs from the shell of a screen session named $SCREEN,
+  # which deploy-desk.yml in gwbtc/urbit uses to commit desks. Every
+  # boot here is typed into that same session.
+  # =============================================================
+  deploy:
+    name: deploy (sponsor)
+    needs: build-vere
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check port variables
+        run: |
+          if [ -z "${HTTP_PORT}" ] || [ -z "${AMES_PORT}" ]; then
+            echo "ERROR: set the repo variables SPONSOR_HTTP_PORT and SPONSOR_AMES_PORT."
+            exit 1
+          fi
+
+      - name: Download vere
+        uses: actions/download-artifact@v4
+        with:
+          name: gw-vere-linux-x86_64
+          path: .
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SPONSOR_VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${SHIP_IP} >> ~/.ssh/known_hosts
+
+      - name: Write ship control script
+        run: |
+          {
+            echo '#!/usr/bin/env bash'
+            printf '%s=%q\n' \
+              SHIP "${SHIP}" SCREEN "${SCREEN}" PIER_PATH "${PIER_PATH}" \
+              PIER "${PIER}" HTTP_PORT "${HTTP_PORT}" AMES_PORT "${AMES_PORT}"
+            cat << 'EOF'
+          set -euo pipefail
+          cd "$PIER_PATH"
+          LOG="$PIER_PATH/gw-deploy-vere.log"
+
+          # eyre serves the ship name at /~/host without a login
+          is_up() {
+            [ "$(curl -fsS --max-time 5 "http://localhost:${HTTP_PORT}/~/host" 2>/dev/null)" = "$SHIP" ]
+          }
+
+          vere_pid() {
+            local pid
+            pid=$(cat "$PIER/.vere.lock" 2>/dev/null || true)
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+              echo "$pid"
+            fi
+          }
+
+          # start <binary> [pier]: type the boot command into the screen
+          # session's shell, making the session first if it is gone
+          start() {
+            local bin="$1"; shift
+            if ! screen -S "$SCREEN" -X select . > /dev/null 2>&1; then
+              screen -dmS "$SCREEN"
+              sleep 1
+            fi
+            screen -S "$SCREEN" -p 0 -X stuff \
+              "$bin --http-port $HTTP_PORT --ames-port $AMES_PORT $*"$'\r'
+          }
+
+          # wait up to 10 minutes for the ship to serve http
+          wait_up() {
+            for i in $(seq 1 120); do
+              if is_up; then
+                echo "$SHIP is up."
+                return 0
+              fi
+              if [ "$i" -gt 2 ] && [ -z "$(vere_pid)" ]; then
+                echo "ERROR: vere exited."
+                break
+              fi
+              sleep 5
+            done
+            echo "ERROR: $SHIP did not come up. Screen contents:"
+            screen -S "$SCREEN" -p 0 -X hardcopy "$LOG" > /dev/null 2>&1 || true
+            sleep 1
+            grep -v '^$' "$LOG" 2>/dev/null || true
+            return 1
+          }
+
+          # stop [force]: SIGTERM vere, wait up to 2 minutes for it to exit
+          stop() {
+            local pid
+            pid=$(vere_pid)
+            if [ -n "$pid" ]; then
+              kill "$pid"
+              for i in $(seq 1 60); do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 2
+              done
+              if kill -0 "$pid" 2>/dev/null; then
+                if [ "${1:-}" != "force" ]; then
+                  echo "ERROR: vere (pid $pid) did not exit."
+                  return 1
+                fi
+                kill -9 "$pid"
+              fi
+              # let the session's shell take the terminal back
+              sleep 2
+            fi
+          }
+
+          case "$1" in
+            check)
+              if ! is_up; then
+                echo "ERROR: $SHIP is not serving http on port $HTTP_PORT."
+                exit 1
+              fi
+              echo "$SHIP is up."
+              ;;
+            stop)
+              stop
+              ;;
+            replace)
+              [ -f gw-vere ] && mv -f gw-vere gw-vere.old
+              mv -f gw-vere.new gw-vere
+              chmod +x gw-vere
+              ;;
+            trial)
+              start "$PIER_PATH/gw-vere" "$PIER_PATH/$PIER"
+              wait_up
+              ;;
+            dock)
+              stop
+              # keep the old docked binary until the reboot succeeds
+              cp -p "$PIER/.run" gw-vere.docked-old
+              ./gw-vere dock "./$PIER"
+              ;;
+            reboot)
+              start "$PIER_PATH/$PIER/.run"
+              wait_up
+              rm -f gw-vere.old gw-vere.docked-old
+              ;;
+            rollback)
+              stop force
+              if [ -f gw-vere.docked-old ]; then
+                ./gw-vere.docked-old dock "./$PIER"
+                rm -f gw-vere.docked-old
+              fi
+              [ -f gw-vere.old ] && mv -f gw-vere.old gw-vere
+              start "$PIER_PATH/$PIER/.run"
+              wait_up
+              ;;
+          esac
+          EOF
+          } > gw-deploy-vere.sh
+
+      - name: Upload new gw-vere
+        run: |
+          scp ./gw-vere ${SHIP_HOST}:${PIER_PATH}/gw-vere.new
+          scp ./gw-deploy-vere.sh ${SHIP_HOST}:${PIER_PATH}/gw-deploy-vere.sh
+
+      - name: Check sponsor is up
+        run: ssh ${SHIP_HOST} "bash ${PIER_PATH}/gw-deploy-vere.sh check"
+
+      - name: Shut down sponsor
+        id: stop
+        run: ssh ${SHIP_HOST} "bash ${PIER_PATH}/gw-deploy-vere.sh stop"
+
+      - name: Replace gw-vere
+        run: ssh ${SHIP_HOST} "bash ${PIER_PATH}/gw-deploy-vere.sh replace"
+
+      - name: Boot sponsor with new gw-vere
+        run: ssh ${SHIP_HOST} "bash ${PIER_PATH}/gw-deploy-vere.sh trial"
+
+      - name: Shut down sponsor and dock new gw-vere
+        run: ssh ${SHIP_HOST} "bash ${PIER_PATH}/gw-deploy-vere.sh dock"
+
+      - name: Reboot sponsor from docked gw-vere
+        run: ssh ${SHIP_HOST} "bash ${PIER_PATH}/gw-deploy-vere.sh reboot"
+
+      - name: Roll back to old docked vere
+        if: ${{ failure() && (steps.stop.outcome == 'success' || steps.stop.outcome == 'failure') }}
+        run: ssh ${SHIP_HOST} "bash ${PIER_PATH}/gw-deploy-vere.sh rollback"
