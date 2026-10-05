@@ -6,6 +6,7 @@ on:
     paths:
       - 'pkg/**'
       - 'ext/**'
+      - '.github/workflows/**'
 
 # never cancel a deploy midway; queue the next one instead
 concurrency:
