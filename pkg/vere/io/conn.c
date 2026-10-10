@@ -296,6 +296,17 @@ _conn_close_chan(u3_shan* san_u, u3_chan* can_u)
 
   //  remove chan from server's connection list.
   //
+  //    A chan that is no longer in the list is already closing: its moat
+  //    stop is in flight and _conn_moat_free will free it on the next
+  //    loop turn.  Closing it again would uv_close the same pipe twice
+  //    and free the chan twice -- which is exactly what happened when a
+  //    reply write to a departed client failed: the write error bailed
+  //    the chan, the bail tried to send a %bail noun on the same dead
+  //    socket, that send failed at once and re-entered the bail, and the
+  //    second _conn_close_chan double-freed the chan (musl a_crash in
+  //    __libc_free under uv__finish_close).  Every client that gives up
+  //    on a slow reply could take the king down.
+  //
   if ( san_u->can_u == can_u ) {
     san_u->can_u = (u3_chan*)can_u->mor_u.nex_u;
   }
@@ -305,6 +316,9 @@ _conn_close_chan(u3_shan* san_u, u3_chan* can_u)
         inn_u->mor_u.nex_u = can_u->mor_u.nex_u;
         break;
       }
+    }
+    if ( !inn_u ) {
+      return;
     }
   }
   can_u->mor_u.nex_u = NULL;
@@ -337,10 +351,26 @@ _conn_moor_bail(void* ptr_v, ssize_t err_i, const c3_c* err_c)
 
   if ( err_i != UV_EOF ) {
     u3l_log("conn: moor bail %zd %s", err_i, err_c);
+    //  Tell a live client its request failed -- unless the failure IS
+    //  the transport: a %bail noun written to a socket whose peer has
+    //  gone fails immediately, re-enters this function, and closed the
+    //  chan a second time (see _conn_close_chan).  Mark the chan dead
+    //  before sending so a re-entrant bail can never send again.
+    //
     if ( _(can_u->liv_o) ) {
-      _conn_send_noun(can_u, u3nq(0, c3__bail, u3i_word(err_i),
-                      u3i_string(err_c)));
       can_u->liv_o = c3n;
+      switch ( err_i ) {
+        case UV_EPIPE:
+        case UV_ECONNRESET:
+        case UV_ECONNABORTED:
+        case UV_ENOTCONN:
+        case UV_ESHUTDOWN:
+        case UV_ECANCELED: break;
+        default: {
+          _conn_send_noun(can_u, u3nq(0, c3__bail, u3i_word(err_i),
+                          u3i_string(err_c)));
+        } break;
+      }
     }
   }
 
