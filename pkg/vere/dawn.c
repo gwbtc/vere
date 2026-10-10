@@ -347,6 +347,18 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
     //
     u3_noun pot;
 
+    //  Safe dawn verifies the booting ship against a gateway, so it
+    //  genuinely needs one.  The default was removed (see main.c), so a
+    //  safe build with no -W would deref a null url below; fail loudly
+    //  instead.  (Groundwire ships build unsafe dawn and never reach
+    //  here.)
+    //
+    if ( 0 == u3_Host.ops_u.gat_c ) {
+      u3l_log("boot: safe dawn requires a PKI gateway; pass -W <url>");
+      _dawn_fail(ship, rank, u3_nul);
+      return u3_none;
+    }
+
     if ( c3__pawn == rank && c3y == azi_o ) {
       //  irrelevant, just bunt +point
       //
@@ -406,25 +418,47 @@ u3_dawn_vent(u3_noun ship, u3_noun feed, u3_noun* rift)
 
   //  (map ship [=rift =life =pass]): galaxy table
   //
-  {
+  //    Only from an EXPLICIT gateway (-W).  With none, boot with an empty
+  //    table (~): a Groundwire ship never routes through galaxies -- it
+  //    reaches its sponsor and peers by the points %gw-btc derives from
+  //    Bitcoin and hands to jael -- and the default gateway's table was
+  //    an unauthenticated dump of that server's peers (poisonable, and
+  //    the source of the stale test-fief entries every ship inherited).
+  //
+  if ( 0 != u3_Host.ops_u.gat_c ) {
     u3l_log("boot: retrieving galaxy table");
-
     sprintf(url_c, "%s/_~_/=lamp=/j",
             u3_Host.ops_u.gat_c);
     zar = u3_king_get_noun(url_c);
   }
+  else {
+    zar = u3_nul;
+  }
 
   //  (list turf): ames domains
+  //
+  //    -H wins; then an explicit gateway; else the network constant,
+  //    baked, NOT fetched.  turf is only the DNS suffix ames uses to
+  //    build galaxy lanes (~zod.urbit.org); it is a public constant, the
+  //    same for every ship, and the =turf= gateway call merely echoed it
+  //    -- so there is nothing to ask a server for.  It must be non-empty:
+  //    jael treats empty turf as the signature of a FAKE ship and a real
+  //    ship with empty turf fails an assert at boot.  A Groundwire comet
+  //    never uses a galaxy lane (it reaches its sponsor at a fief IP from
+  //    the chain), so the value is inert here; it exists only to satisfy
+  //    that invariant without contacting anything.
   //
   if ( 0 != u3_Host.ops_u.dns_c ) {
     tuf = _dawn_turf(u3_Host.ops_u.dns_c);
   }
-  else {
+  else if ( 0 != u3_Host.ops_u.gat_c ) {
     u3l_log("boot: retrieving network domains");
-
     sprintf(url_c, "%s/_~_/=turf=/j",
             u3_Host.ops_u.gat_c);
     tuf = u3_king_get_noun(url_c);
+  }
+  else {
+    tuf = u3v_wish("`(list path)`~[/org/urbit]");
   }
 
 #ifndef unsafe_dawn
