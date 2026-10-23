@@ -2,6 +2,9 @@
 
 #include "noun.h"
 
+#include "jets/q.h"
+#include "jets/w.h"
+
 /* _setup(): prepare for tests.
 */
 static void
@@ -925,10 +928,41 @@ _test_mas(void)
   return ret_i;
 }
 
+/* _test_bytestream_need_bits(): a need-bits whose result would exceed the
+** 64-bit accumulator declines (returns u3_none, so the interpreter runs
+** the unbounded Hoon) instead of aborting the process at a u3_assert
+** (gwbtc/vere#30, B1). num 60 + one byte would be 68 bits. The unfixed
+** jet aborts here; the fixed jet returns u3_none.
+*/
+static c3_i
+_test_bytestream_need_bits(void)
+{
+  c3_i    ret_i = 1;
+  u3_noun data  = u3nc(8, u3i_chub(0xffffffffffffffffULL));
+  u3_noun bays  = u3nc(0, data);
+  u3_noun bits  = u3nt(60, 0, bays);
+  u3_noun cor   = u3nc(0, u3nc(u3nc(64, bits), 0));   //  sample [n bits]
+  u3_noun pro   = u3we_bytestream_need_bits(cor);
+
+  if ( u3_none != pro ) {
+    fprintf(stderr, "need-bits: past 64 bits should decline (u3_none)\r\n");
+    ret_i = 0;
+    u3z(pro);
+  }
+
+  u3z(cor);
+  return ret_i;
+}
+
 static c3_i
 _test_jets(void)
 {
   c3_i ret_i = 1;
+
+  if ( !_test_bytestream_need_bits() ) {
+    fprintf(stderr, "test jets: bytestream_need_bits: failed\r\n");
+    ret_i = 0;
+  }
 
   if ( !_test_etch_ud() ) {
     fprintf(stderr, "test jets: etch_ud: failed\r\n");
