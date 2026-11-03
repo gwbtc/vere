@@ -351,6 +351,19 @@ _newt_write_cb(uv_write_t* wri_u, c3_i sas_i)
     if ( UV_ECANCELED == sas_i ) {
       fprintf(stderr, "newt: write canceled\r\n");
     }
+    //  A write that fails after the stream has been told to close is not
+    //  an error anyone can still act on, and calling bal_f here is fatal:
+    //  u3_newt_moat_stop() has by then pointed bal_f at the owner's free
+    //  function (to run from the close callback), so this call freed the
+    //  owner early and the close callback freed it again.  Seen whenever a
+    //  control-socket client hung up on a reply still in flight: its EOF
+    //  closed the channel, the reply then failed with EPIPE, and the king
+    //  died in __libc_free under uv__finish_close.
+    //
+    else if ( uv_is_closing((uv_handle_t*)&moj_u->pyp_u) ) {
+      fprintf(stderr, "newt: write failed %s (stream closing)\r\n",
+              uv_strerror(sas_i));
+    }
     else {
       fprintf(stderr, "newt: write failed %s\r\n", uv_strerror(sas_i));
       moj_u->bal_f(moj_u->ptr_v, sas_i, uv_strerror(sas_i));
