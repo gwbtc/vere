@@ -93,14 +93,15 @@ jobs:
 
       # The three targets a Groundwire release ships, not -Dall: this fork's
       # mesa.c does not compile for x86_64-windows-gnu and nothing ships it
-      # (every PR failed there, 2026-11-03).
+      # (every PR failed there, 2026-11-03). No -Dcpu: build.zig's target
+      # whitelist matches the bare triple only, as the sponsor deploy builds it.
       - name: Build binaries
         run: |
           for t in x86_64-linux-musl aarch64-linux-musl aarch64-macos; do
             if [[ "${{ inputs.pace }}" == "live" ]]; then
-              zig build -Dtarget=$t -Dcpu=baseline -Dunsafe-dawn=true -Drelease --summary all
+              zig build -Dtarget=$t -Dunsafe-dawn=true -Drelease --summary all
             else
-              zig build -Dtarget=$t -Dcpu=baseline -Doptimize=ReleaseFast -Dpace=${{inputs.pace}} -Dunsafe-dawn=true --summary all
+              zig build -Dtarget=$t -Doptimize=ReleaseFast -Dpace=${{inputs.pace}} -Dunsafe-dawn=true --summary all
             fi
           done
       - name: Run unit tests
