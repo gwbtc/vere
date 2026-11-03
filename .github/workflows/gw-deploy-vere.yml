@@ -1,12 +1,10 @@
 name: Deploy vere to sponsor ship
+# Manual since the 2026-11-03 branch cleanup: this used to run on every
+# push to the development branch and restart the live sponsor ship with
+# whatever had just merged. Run it from the Actions tab when the sponsor
+# should take a new runtime.
 on:
-  push:
-    branches:
-      - gw/next/kelvin/408
-    paths:
-      - 'pkg/**'
-      - 'ext/**'
-      - '.github/workflows/**'
+  workflow_dispatch:
 
 # never cancel a deploy midway; queue the next one instead
 concurrency:
