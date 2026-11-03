@@ -131,7 +131,8 @@ jobs:
 
           # eyre serves the ship name at /~/host without a login
           is_up() {
-            [ "$(curl -fsS --max-time 5 "http://localhost:${HTTP_PORT}/~/host" 2>/dev/null)" = "$SHIP" ]
+            # -L -k: the sponsor's eyre answers http with a 301 to https now
+            [ "$(curl -fsSL -k --max-time 5 "http://localhost:${HTTP_PORT}/~/host" 2>/dev/null)" = "$SHIP" ]
           }
 
           # pid of the pier's king process. .vere.lock holds the worker's
