@@ -22,7 +22,7 @@
         devShell = pkgs.mkShell {
           buildInputs = with pkgs; [
             clang-tools
-            zig
+            zig_0_15 # check for 0.16 compatibility
             zls
             python313
 

@@ -44,6 +44,9 @@ static c3_y are_y[524288];
 
 #define JUMBO_CACHE_MAX_SIZE 200000000 // 200 mb
 
+#define PEEK_QUEUE_MAX       40
+#define POKE_QUEUE_MAX       30
+
 // logging and debug symbols
 #define MESA_SYM_DESC(SYM) MESA_DESC_ ## SYM
 #define MESA_SYM_FIELD(SYM) MESA_FIELD_ ## SYM
@@ -1530,7 +1533,7 @@ _mesa_ef_send(u3_mesa* mes_u, u3_noun las, u3_noun pac)
       dat_u->len_w = len_w;
     }
     {
-      res_u->ret_y = 9;
+      res_u->ret_y = 2;
       uv_timer_init(u3L, &res_u->tim_u);
     }
     _mesa_put_request(mes_u, nam_u, (u3_pend_req*)CTAG_WAIT);
@@ -1942,6 +1945,7 @@ _mesa_page_scry_jumbo_cb(void* vod_p, u3_noun res)
       u3l_log("mesa: jumbo frame parse failure: %s", err_c);
       arena_free(&han_u->are_u);
       u3z(res);
+      c3_free(jumbo_y);
       return;
     }
     u3_mesa_data* dat_u = &jum_u.pag_u.dat_u;
@@ -2180,6 +2184,11 @@ _mesa_req_pact_init(u3_mesa* mes_u, u3_mesa_pict* pic_u, sockaddr_in lan_u, u3_p
   c3_w pof_w = lss_proof_size(tof_d);
   c3_w pairs_w = c3_bits_word(pof_w);
   c3_d pek_d = dat_u->tob_d;
+
+  if ( dat_u->len_w != pof_w*sizeof(lss_hash) ) {
+    return; // TODO: handle like other auth failures
+  }
+
   arena are_u = arena_create(5*dat_u->tob_d);
   u3_pend_req* req_u = new(&are_u, u3_pend_req, 1);
   req_u->are_u = are_u;
@@ -2215,9 +2224,6 @@ _mesa_req_pact_init(u3_mesa* mes_u, u3_mesa_pict* pic_u, sockaddr_in lan_u, u3_p
   req_u->ack_d = 0;
 
   lss_hash* pof_u = new(&req_u->are_u, lss_hash, pof_w);
-  if ( dat_u->len_w != pof_w*sizeof(lss_hash) ) {
-    return; // TODO: handle like other auth failures
-  }
   for ( int i = 0; i < pof_w; i++ ) {
     memcpy(pof_u[i], dat_u->fra_y + (i * sizeof(lss_hash)), sizeof(lss_hash));
   }
@@ -2525,6 +2531,12 @@ _mesa_hear_peek(u3_mesa_pict* pic_u, sockaddr_in lan_u)
     return;
   }
 
+  u3_pier* pir_u = mes_u->car_u.pir_u;
+
+  if ( PEEK_QUEUE_MAX <= pir_u->pec_u.dep_w ) {
+    // XX log drop
+    return;
+  }
 
   // record interest
   _mesa_add_lane_to_pit(mes_u, &pac_u->pek_u.nam_u, lan_u);
@@ -2534,7 +2546,7 @@ _mesa_hear_peek(u3_mesa_pict* pic_u, sockaddr_in lan_u)
 
   _mesa_put_jumbo_cache(mes_u, &pac_u->pek_u.nam_u, lin_u);
   u3_noun sky = _name_to_jumbo_scry(&pac_u->pek_u.nam_u);
-  u3_noun our = u3_ship_to_noun(mes_u->car_u.pir_u->who_u);
+  u3_noun our = u3_ship_to_noun(pir_u->who_u);
   u3_noun bem = u3nc(u3nt(our, u3_nul, u3nc(c3__ud, 1)), sky);
 
   arena are_u = arena_create(sizeof(u3_mesa_cb_data) + 1024);
@@ -2545,7 +2557,7 @@ _mesa_hear_peek(u3_mesa_pict* pic_u, sockaddr_in lan_u)
   dat_u->mes_u = mes_u;
   _mesa_copy_name(&dat_u->nam_u, &pac_u->pek_u.nam_u, &han_u->are_u);
 
-  u3_pier_peek(mes_u->car_u.pir_u, u3_nul, u3k(u3nq(1, c3__beam, c3__ax, bem)), han_u, _mesa_page_scry_jumbo_cb);
+  u3_pier_peek(pir_u, u3_nul, u3nq(1, c3__beam, c3__ax, bem), han_u, _mesa_page_scry_jumbo_cb);
 }
 
 static void
@@ -2572,6 +2584,12 @@ _mesa_hear_poke(u3_mesa_pict* pic_u, sockaddr_in lan_u)
     _mesa_forward_request(mes_u, pic_u, lan_u);
     return;
   }
+
+  if ( POKE_QUEUE_MAX <= mes_u->car_u.dep_w ) {
+    // XX log drop
+    return;
+  }
+
   //  TODO check if lane already in pit, drop dupes
   _mesa_add_lane_to_pit(mes_u, &pac_u->pek_u.nam_u, lan_u);
 
@@ -2654,6 +2672,11 @@ _mesa_hear(u3_mesa* mes_u,
       return;
 
     _ames_hear(mes_u->sam_u, lan_u, len_w, hun_y);
+    return;
+  }
+
+  if ( len_w > PACT_SIZE ) {
+    u3l_log("mesa: packet too large");
     return;
   }
 

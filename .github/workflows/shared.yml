@@ -46,6 +46,21 @@ jobs:
       #
       - uses: actions/checkout@v3
 
+      # This fork's build.zig takes gwbtc/urcrypt from ../urcrypt (the
+      # groundwire-build and sponsor-deploy workflows lay it out the same
+      # way). Without it every pull request failed in 'Build binaries' with
+      # "unable to open '../urcrypt': FileNotFound" (2026-11-03).
+      - name: Checkout gwbtc/urcrypt
+        uses: actions/checkout@v4
+        with:
+          repository: gwbtc/urcrypt
+          ref: gw/cmp-pub
+          path: gwbtc-urcrypt
+      - name: Prepare urcrypt
+        run: |
+          rm -f gwbtc-urcrypt/build.zig gwbtc-urcrypt/build.zig.zon
+          ln -sfn "$(pwd)/gwbtc-urcrypt" ../urcrypt
+
       - name: Set swap space
         run: |
           echo "Memory and swap:"
@@ -76,22 +91,19 @@ jobs:
         with:
           version: 0.15.2
 
+      # The three targets a Groundwire release ships, not -Dall: this fork's
+      # mesa.c does not compile for x86_64-windows-gnu and nothing ships it
+      # (every PR failed there, 2026-11-03). No -Dcpu: build.zig's target
+      # whitelist matches the bare triple only, as the sponsor deploy builds it.
       - name: Build binaries
         run: |
-          if [[ "${{ inputs.pace }}" == "live" ]]; then
-            zig build                  \
-              -Dall                    \
-              -Dunsafe-dawn=true       \
-              -Drelease                \
-              --summary all
-          else
-            zig build                  \
-              -Dall                    \
-              -Doptimize=ReleaseFast   \
-              -Dpace=${{inputs.pace}}  \
-              -Dunsafe-dawn=true       \
-              --summary all
-          fi
+          for t in x86_64-linux-musl aarch64-linux-musl aarch64-macos; do
+            if [[ "${{ inputs.pace }}" == "live" ]]; then
+              zig build -Dtarget=$t -Dunsafe-dawn=true -Drelease --summary all
+            else
+              zig build -Dtarget=$t -Doptimize=ReleaseFast -Dpace=${{inputs.pace}} -Dunsafe-dawn=true --summary all
+            fi
+          done
       - name: Run unit tests
         run: |
           zig build                    \

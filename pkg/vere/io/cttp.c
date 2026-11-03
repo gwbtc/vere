@@ -90,12 +90,25 @@
     c3_o                 wsl_on;         // inside wslay send/recv
     c3_o                 clo_ev;         // send disconnect event on deferred close
     c3_o                 clo_on;         // deferred close pending
+    uv_timer_t*          kip_u;          // keepalive timer (open sockets)
+    c3_o                 pin_o;          // keepalive ping unanswered
     struct _u3_cws*      nex_u;          // next in list
     struct _u3_cws*      pre_u;          // prev in list
   };
 
+  //  logging with -v only: everything that's routine, from each frame to
+  //  sockets opening and closing and servers going away (arvo hears of all
+  //  of it anyway), and failed http requests (the requester gets the
+  //  504). what's left always printing is arvo handing us something
+  //  malformed: a bug to see
+  //
+  #define _cttp_vlog(...) \
+    do { if ( u3C.wag_w & u3o_verbose ) { u3l_log(__VA_ARGS__); } } while (0)
+
   static void _cttp_ws_close(u3_cws* cws_u, c3_o send_event);
   static void _cttp_ws_proceed(u3_cws* cws_u);
+  static void _cttp_ws_keep_start(u3_cws* cws_u);
+  static void _cttp_ws_keep_stop(u3_cws* cws_u);
   static c3_o _cttp_ws_start(u3_cttp* ctp_u, c3_l wid_l, u3_atom url);
   static c3_o _cttp_ws_send_message(u3_cws* cws_u, u3_noun msg);
   static void _cttp_ws_queue_close(u3_cws* cws_u);
@@ -336,11 +349,11 @@ _cttp_ws_plan_event(u3_cws* cws_u, u3_noun event)
   u3_noun typ = u3h(event);
   if ( c3y == u3a_is_cat(typ) ) {
     c3_c* nam_c = u3r_string(u3k(typ));
-    u3l_log("cttp: ws plan wid=%u typ=%s", wid_l, nam_c);
+    _cttp_vlog("cttp: ws plan wid=%u typ=%s", wid_l, nam_c);
     c3_free(nam_c);
   }
   else {
-    u3l_log("cttp: ws plan wid=%u", wid_l);
+    _cttp_vlog("cttp: ws plan wid=%u", wid_l);
   }
   u3_noun wir = u3nt(u3i_string("http-client"),
                      u3dc("scot", c3__uv, ctp_u->sev_l),
@@ -1025,7 +1038,7 @@ _cttp_creq_fail(u3_creq* ceq_u, const c3_c* err_c)
   // XX anything other than a 504?
   c3_w cod_w = 504;
 
-  u3l_log("http: fail (%d, %d): %s", ceq_u->num_l, cod_w, err_c);
+  _cttp_vlog("http: fail (%d, %d): %s", ceq_u->num_l, cod_w, err_c);
 
   // XX include err_c as response body?
   _cttp_http_client_receive(ceq_u, cod_w, u3_nul, u3_nul);
@@ -1117,7 +1130,7 @@ _cttp_creq_on_head(h2o_http1client_t* cli_u, const c3_c* err_c, c3_i ver_i,
 
     for ( size_t i = 0; i < hed_t; i++ ) {
       h2o_header_t* hdr = &hed_u[i];
-      u3l_log("cttp: ws hdr %.*s: %.*s",
+      _cttp_vlog("cttp: ws hdr %.*s: %.*s",
               (int)hdr->name->len, hdr->name->base,
               (int)hdr->value.len, hdr->value.base);
     }
@@ -1151,11 +1164,23 @@ _cttp_creq_on_head(h2o_http1client_t* cli_u, const c3_c* err_c, c3_i ver_i,
     ceq_u->cli_u = 0;
     cws_u->ceq_u = 0;
 
+    //  h2o calls us before consuming the response head, and hands us its
+    //  length (len_i). consume that, and only that: whatever follows in
+    //  the buffer is the server's first frames, for wslay to read
+    //
     if ( sok_u->input && sok_u->input->size ) {
-      u3l_log("cttp: ws draining leftover handshake wid=%u size=%zu",
-              cws_u->wid_l,
-              (size_t)sok_u->input->size);
-      h2o_buffer_consume(&sok_u->input, sok_u->input->size);
+      size_t hed_z = ( len_i > 0 ) ? (size_t)len_i : 0;
+
+      if ( hed_z > sok_u->input->size ) {
+        hed_z = sok_u->input->size;
+      }
+      h2o_buffer_consume(&sok_u->input, hed_z);
+
+      if ( sok_u->input->size ) {
+        _cttp_vlog("cttp: ws frames with the handshake wid=%u size=%zu",
+                      cws_u->wid_l,
+                      (size_t)sok_u->input->size);
+      }
     }
 
     _cttp_creq_free(ceq_u);
@@ -1174,6 +1199,7 @@ _cttp_creq_on_head(h2o_http1client_t* cli_u, const c3_c* err_c, c3_i ver_i,
     cws_u->sat_e = u3_cws_open;
 
     _cttp_ws_plan_event(cws_u, u3nc(u3i_string("accept"), u3_nul));
+    _cttp_ws_keep_start(cws_u);
     _cttp_ws_proceed(cws_u);
     return 0;
   }
@@ -1410,6 +1436,12 @@ _cttp_ef_http_client(u3_cttp* ctp_u, u3_noun tag, u3_noun dat)
       _cttp_creq_quit(ceq_u);
       ret_o = c3y;
     }
+    else if ( 0 != _cttp_ws_find(ctp_u, num_l) ) {
+      //  a websocket past its handshake has no request left: close it
+      //
+      _cttp_ws_queue_close(_cttp_ws_find(ctp_u, num_l));
+      ret_o = c3y;
+    }
     else {
       //  accepted whether or not request exists
       //
@@ -1448,7 +1480,7 @@ _cttp_ef_http_client(u3_cttp* ctp_u, u3_noun tag, u3_noun dat)
 
       if ( 0 == cws_u ) {
         if ( c3y == u3r_sing_c("message", typ) ) {
-          u3l_log("cttp: unknown websocket id %u", wid_l);
+          _cttp_vlog("cttp: unknown websocket id %u", wid_l);
           ret_o = c3n;
         }
         else {
@@ -1565,8 +1597,10 @@ _cttp_io_exit(u3_auto* car_u)
     u3_creq* ceq_u = ctp_u->ceq_u;
 
     while ( ceq_u ) {
+      //  quit may free it: take the next one first
+      u3_creq* nex_u = ceq_u->nex_u;
       _cttp_creq_quit(ceq_u);
-      ceq_u = ceq_u->nex_u;
+      ceq_u = nex_u;
     }
   }
 
@@ -1636,6 +1670,84 @@ _cttp_hed_push(u3_hhed** list_u, const c3_c* nam_c, const c3_c* val_c)
   hed_u->nex_u = *list_u;
   *list_u = hed_u;
 }
+/* websocket keepalive: a half-open connection (no FIN, no RST: a NAT
+** forgot us, say) never errors until we write, and may not then for many
+** minutes. so every _cttp_ws_keep_ms we PING; if nothing at all has come
+** from the server since the last tick, the socket is dead: close it and
+** tell arvo. the same tick ends a close handshake the server never
+** finished.
+*/
+  #define _cttp_ws_keep_ms 30000
+
+static void
+_cttp_ws_keep_free(uv_handle_t* han_u)
+{
+  c3_free(han_u);
+}
+
+static void
+_cttp_ws_keep_cb(uv_timer_t* tim_u)
+{
+  u3_cws* cws_u = tim_u->data;
+
+  if ( 0 == cws_u ) {
+    return;
+  }
+
+  if ( c3y == cws_u->pin_o ) {
+    _cttp_vlog("cttp: ws wid=%u silent for %us, closing",
+            cws_u->wid_l, _cttp_ws_keep_ms / 1000);
+    _cttp_ws_close(cws_u, c3y);
+    return;
+  }
+
+  cws_u->pin_o = c3y;
+
+  if ( (u3_cws_open == cws_u->sat_e) && cws_u->wsl_w ) {
+    struct wslay_event_msg png_u = {
+      .opcode = WSLAY_PING,
+      .msg = 0,
+      .msg_length = 0
+    };
+
+    if ( 0 == wslay_event_queue_msg(cws_u->wsl_w, &png_u) ) {
+      _cttp_ws_proceed(cws_u);
+    }
+  }
+}
+
+static void
+_cttp_ws_keep_start(u3_cws* cws_u)
+{
+  if ( cws_u->kip_u ) {
+    return;
+  }
+
+  cws_u->kip_u = c3_malloc(sizeof(*cws_u->kip_u));
+  uv_timer_init(u3L, cws_u->kip_u);
+  cws_u->kip_u->data = cws_u;
+  cws_u->pin_o = c3n;
+  uv_timer_start(cws_u->kip_u, _cttp_ws_keep_cb,
+                 _cttp_ws_keep_ms, _cttp_ws_keep_ms);
+}
+
+static void
+_cttp_ws_keep_stop(u3_cws* cws_u)
+{
+  if ( 0 == cws_u->kip_u ) {
+    return;
+  }
+
+  uv_timer_t* tim_u = cws_u->kip_u;
+  cws_u->kip_u = 0;
+
+  //  the handle outlives the session: it's freed when libuv's done
+  //
+  tim_u->data = 0;
+  uv_timer_stop(tim_u);
+  uv_close((uv_handle_t*)tim_u, _cttp_ws_keep_free);
+}
+
 static void
 _cttp_ws_close(u3_cws* cws_u, c3_o send_event)
 {
@@ -1650,6 +1762,8 @@ _cttp_ws_close(u3_cws* cws_u, c3_o send_event)
     cws_u->clo_on = c3y;
     return;
   }
+
+  _cttp_ws_keep_stop(cws_u);
 
   if ( cws_u->ceq_u ) {
     u3_creq* ceq_u = cws_u->ceq_u;
@@ -1667,7 +1781,7 @@ _cttp_ws_close(u3_cws* cws_u, c3_o send_event)
   }
 
   if ( u3_cws_closed != cws_u->sat_e ) {
-    u3l_log("cttp: ws close wid=%u send=%c", cws_u->wid_l, (c3y==send_event?'y':'n'));
+    _cttp_vlog("cttp: ws close wid=%u send=%c", cws_u->wid_l, (c3y==send_event?'y':'n'));
     cws_u->sat_e = u3_cws_closed;
 
     if ( c3y == send_event ) {
@@ -1683,6 +1797,9 @@ _cttp_ws_close(u3_cws* cws_u, c3_o send_event)
     if ( cws_u->sok_u ) {
       h2o_socket_t* sok_u = cws_u->sok_u;
       cws_u->sok_u = 0;
+      //  a write still in flight may call back after this: it mustn't
+      //  find the session we're about to free
+      sok_u->data = 0;
       h2o_socket_close(sok_u);
     }
   }
@@ -1732,14 +1849,14 @@ _cttp_ws_recv_cb(wslay_event_context_ptr ctx,
 {
   u3_cws* cws_u = ves_p;
 
-  u3l_log("cttp: ws recv_cb wid=%u want=%zu have=%zu",
+  _cttp_vlog("cttp: ws recv_cb wid=%u want=%zu have=%zu",
           cws_u->wid_l,
           len_w,
           (size_t)cws_u->sok_u->input->size);
 
   if ( 0 == cws_u->sok_u->input->size ) {
     wslay_event_set_error(ctx, WSLAY_ERR_WOULDBLOCK);
-    u3l_log("cttp: ws recv_cb wid=%u empty", cws_u->wid_l);
+    _cttp_vlog("cttp: ws recv_cb wid=%u empty", cws_u->wid_l);
     return -1;
   }
 
@@ -1762,14 +1879,14 @@ _cttp_ws_send_cb(wslay_event_context_ptr ctx,
 {
   u3_cws* cws_u = ves_p;
 
-  u3l_log("cttp: ws send_cb wid=%u len=%zu writing=%c",
+  _cttp_vlog("cttp: ws send_cb wid=%u len=%zu writing=%c",
           cws_u->wid_l,
           len_w,
           h2o_socket_is_writing(cws_u->sok_u) ? 'y' : 'n');
 
   if ( h2o_socket_is_writing(cws_u->sok_u) ) {
     wslay_event_set_error(ctx, WSLAY_ERR_WOULDBLOCK);
-    u3l_log("cttp: ws send_cb wid=%u busy", cws_u->wid_l);
+    _cttp_vlog("cttp: ws send_cb wid=%u busy", cws_u->wid_l);
     return -1;
   }
 
@@ -1794,18 +1911,28 @@ _cttp_ws_msg_cb(wslay_event_context_ptr ctx,
   u3_cws* cws_u = ves_p;
 
   if ( 0 == arg ) {
-    u3l_log("cttp: ws msg close wid=%u", cws_u->wid_l);
+    _cttp_vlog("cttp: ws msg close wid=%u", cws_u->wid_l);
     _cttp_ws_close(cws_u, c3y);
     return;
   }
 
+  //  the server's closing: wslay has queued our reply, and stops wanting
+  //  to read. _cttp_ws_proceed sends it, then closes the socket (and
+  //  tells arvo) once wslay wants neither to read nor to write
+  //
   if ( WSLAY_CONNECTION_CLOSE == arg->opcode ) {
-    u3l_log("cttp: ws msg opcode close wid=%u", cws_u->wid_l);
-    _cttp_ws_close(cws_u, c3y);
+    _cttp_vlog("cttp: ws msg opcode close wid=%u", cws_u->wid_l);
     return;
   }
 
-  u3l_log("cttp: ws msg opcode=%u len=%zu", arg->opcode, arg->msg_length);
+  //  control frames are ours: wslay answers a PING itself, and a PONG
+  //  only tells the keepalive the socket's alive (as any frame does)
+  //
+  if ( (WSLAY_PING == arg->opcode) || (WSLAY_PONG == arg->opcode) ) {
+    return;
+  }
+
+  _cttp_vlog("cttp: ws msg opcode=%u len=%zu", arg->opcode, arg->msg_length);
 
   u3_noun payload;
   if ( 0 == arg->msg_length ) {
@@ -1871,14 +1998,17 @@ _cttp_ws_proceed(u3_cws* cws_u)
       if ( 0 == sas_i ) {
         handled = c3y;
       }
+      else if ( WSLAY_ERR_WOULDBLOCK == sas_i ) {
+        _cttp_vlog("cttp: ws send wid=%u would block", cws_u->wid_l);
+      }
       else {
-        u3l_log("cttp: ws send err wid=%u code=%d want-read=%c want-write=%c",
+        _cttp_vlog("cttp: ws send err wid=%u code=%d want-read=%c want-write=%c",
                 cws_u->wid_l,
                 sas_i,
                 wslay_event_want_read(cws_u->wsl_w) ? 'y' : 'n',
                 wslay_event_want_write(cws_u->wsl_w) ? 'y' : 'n');
 
-        if ( WSLAY_ERR_WOULDBLOCK != sas_i ) {
+        {
           //  any other error is fatal to the websocket session
           _cttp_ws_close(cws_u, c3y);
           return;
@@ -1898,15 +2028,18 @@ _cttp_ws_proceed(u3_cws* cws_u)
       if ( 0 == ras_i ) {
         handled = c3y;
       }
+      else if ( WSLAY_ERR_WOULDBLOCK == ras_i ) {
+        _cttp_vlog("cttp: ws recv wid=%u would block", cws_u->wid_l);
+      }
       else {
-        u3l_log("cttp: ws recv err wid=%u code=%d want-read=%c want-write=%c input=%zu",
+        _cttp_vlog("cttp: ws recv err wid=%u code=%d want-read=%c want-write=%c input=%zu",
                 cws_u->wid_l,
                 ras_i,
                 wslay_event_want_read(cws_u->wsl_w) ? 'y' : 'n',
                 wslay_event_want_write(cws_u->wsl_w) ? 'y' : 'n',
                 (size_t)cws_u->sok_u->input->size);
 
-        if ( WSLAY_ERR_WOULDBLOCK != ras_i ) {
+        {
           //  wslay reports anything else as a hard protocol failure
           _cttp_ws_close(cws_u, c3y);
           return;
@@ -1920,18 +2053,22 @@ _cttp_ws_proceed(u3_cws* cws_u)
   }
 
   if ( wslay_event_want_read(cws_u->wsl_w) ) {
-    u3l_log("cttp: ws proceed wid=%u want-read", cws_u->wid_l);
+    _cttp_vlog("cttp: ws proceed wid=%u want-read", cws_u->wid_l);
     h2o_socket_read_start(cws_u->sok_u, _cttp_ws_read_cb);
   }
   else if ( h2o_socket_is_writing(cws_u->sok_u) ||
             wslay_event_want_write(cws_u->wsl_w) )
   {
-    u3l_log("cttp: ws proceed wid=%u write-pending", cws_u->wid_l);
+    _cttp_vlog("cttp: ws proceed wid=%u write-pending", cws_u->wid_l);
     h2o_socket_read_stop(cws_u->sok_u);
   }
   else {
-    u3l_log("cttp: ws proceed wid=%u idle", cws_u->wid_l);
-    h2o_socket_read_start(cws_u->sok_u, _cttp_ws_read_cb);
+    //  wslay wants neither to read nor to write: the close handshake is
+    //  done (or wslay gave up on the session). close the socket and tell
+    //  arvo, or it would sit idle, open, forever
+    //
+    _cttp_vlog("cttp: ws wid=%u closed by handshake", cws_u->wid_l);
+    _cttp_ws_close(cws_u, c3y);
   }
 }
 
@@ -1940,13 +2077,21 @@ _cttp_ws_read_cb(h2o_socket_t* sok_u, const c3_c* err_c)
 {
   u3_cws* cws_u = sok_u->data;
 
+  if ( 0 == cws_u ) {
+    return;  //  the session's closed; h2o's finishing up
+  }
+
   if ( err_c ) {
-    u3l_log("cttp: ws read err %s", err_c);
+    _cttp_vlog("cttp: ws read err %s", err_c);
     _cttp_ws_close(cws_u, c3y);
     return;
   }
 
-  u3l_log("cttp: ws read wid=%u size=%zu", cws_u->wid_l, sok_u->input->size);
+  //  anything from the server answers the keepalive
+  //
+  cws_u->pin_o = c3n;
+
+  _cttp_vlog("cttp: ws read wid=%u size=%zu", cws_u->wid_l, sok_u->input->size);
 
   _cttp_ws_proceed(cws_u);
 }
@@ -1956,18 +2101,22 @@ _cttp_ws_write_cb(h2o_socket_t* sok_u, const c3_c* err_c)
 {
   u3_cws* cws_u = sok_u->data;
 
+  if ( 0 == cws_u ) {
+    return;  //  the session's closed (_cttp_ws_close freed the buffer)
+  }
+
   if ( cws_u->out_y ) {
     c3_free(cws_u->out_y);
     cws_u->out_y = 0;
   }
 
   if ( err_c ) {
-    u3l_log("cttp: ws write err %s", err_c);
+    _cttp_vlog("cttp: ws write err %s", err_c);
     _cttp_ws_close(cws_u, c3y);
     return;
   }
 
-  u3l_log("cttp: ws write done wid=%u", cws_u->wid_l);
+  _cttp_vlog("cttp: ws write done wid=%u", cws_u->wid_l);
   _cttp_ws_proceed(cws_u);
 }
 
@@ -1975,17 +2124,17 @@ static void
 _cttp_ws_queue_close(u3_cws* cws_u)
 {
   if ( (u3_cws_open != cws_u->sat_e) || (0 == cws_u->wsl_w) ) {
-    u3l_log("cttp: ws queue close wid=%u direct", cws_u->wid_l);
+    _cttp_vlog("cttp: ws queue close wid=%u direct", cws_u->wid_l);
     _cttp_ws_close(cws_u, c3y);
     return;
   }
 
   if ( u3_cws_closing == cws_u->sat_e ) {
-    u3l_log("cttp: ws queue close wid=%u already", cws_u->wid_l);
+    _cttp_vlog("cttp: ws queue close wid=%u already", cws_u->wid_l);
     return;
   }
 
-  u3l_log("cttp: ws queue close wid=%u normal", cws_u->wid_l);
+  _cttp_vlog("cttp: ws queue close wid=%u normal", cws_u->wid_l);
   cws_u->sat_e = u3_cws_closing;
   wslay_event_queue_close(cws_u->wsl_w, WSLAY_CODE_NORMAL_CLOSURE, NULL, 0);
   _cttp_ws_proceed(cws_u);
@@ -2070,10 +2219,10 @@ _cttp_ws_fail_handshake(u3_creq* ceq_u, const c3_c* err_c)
   ceq_u->wsu_u = 0;
 
   if ( err_c ) {
-    u3l_log("cttp: websocket handshake failed (%s)", err_c);
+    _cttp_vlog("cttp: websocket handshake failed (%s)", err_c);
   }
   else {
-    u3l_log("cttp: websocket handshake failed (unknown)");
+    _cttp_vlog("cttp: websocket handshake failed (unknown)");
   }
 
   _cttp_ws_plan_event(cws_u, u3nc(u3i_string("reject"), u3_nul));
@@ -2083,7 +2232,7 @@ _cttp_ws_fail_handshake(u3_creq* ceq_u, const c3_c* err_c)
 static c3_o
 _cttp_ws_start(u3_cttp* ctp_u, c3_l wid_l, u3_atom url)
 {
-  u3l_log("cttp: ws start wid=%u", wid_l);
+  _cttp_vlog("cttp: ws start wid=%u", wid_l);
   u3_cws* cws_u = c3_calloc(sizeof(*cws_u));
 
   cws_u->wid_l = wid_l;
@@ -2091,6 +2240,8 @@ _cttp_ws_start(u3_cttp* ctp_u, c3_l wid_l, u3_atom url)
   cws_u->wsl_on = c3n;
   cws_u->clo_ev = c3n;
   cws_u->clo_on = c3n;
+  cws_u->kip_u = 0;
+  cws_u->pin_o = c3n;    //  c3y is 0: calloc'd would read as unanswered
 
   _cttp_ws_generate_key(cws_u);
   _cttp_ws_link(ctp_u, cws_u);

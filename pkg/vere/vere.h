@@ -650,6 +650,7 @@
           struct {
             u3_pico*       ent_u;
             u3_pico*       ext_u;
+            c3_w           dep_w;
           } pec_u;
           void*            sop_p;               //  slog stream data
           void           (*sog_f)               //  slog stream callback
@@ -1187,6 +1188,13 @@
       */
         u3_auto*
         u3_lick_io_init(u3_pier* pir_u);
+
+    /**  mach, TCP client.
+    **/
+      /* u3_mach_io_init(): initialize tcp driver.
+      */
+        u3_auto*
+        u3_mach_io_init(u3_pier* pir_u);
 
     /**  HTTP server.
     **/

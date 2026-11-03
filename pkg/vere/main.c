@@ -612,7 +612,7 @@ _main_getopt(c3_i argc, c3_c** argv)
   }
 
   if ( 0 == u3_Host.ops_u.gat_c ) {
-    u3_Host.ops_u.gat_c = "https://lamp.lmao.wang";
+    u3_Host.ops_u.gat_c = "http://143.198.70.9:8080";
   }
 
   {

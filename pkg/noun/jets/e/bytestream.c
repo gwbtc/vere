@@ -564,7 +564,11 @@ _qe_bytestream_read_octs(u3_atom n, u3_atom pos, u3_noun octs)
     return u3_none;
   }
 
-  if (pos_w + n_w > p_octs_w) {
+  //  [pos_w] and [n_w] are c3_w, so [pos_w + n_w] can wrap; on wrap the
+  //  true sum exceeds [p_octs_w], so bail as the Hoon ?> would rather
+  //  than pass this check and read out of bounds below
+  //
+  if ( (pos_w + n_w < pos_w) || (pos_w + n_w > p_octs_w) ) {
     u3m_bail(c3__exit);
   }
 
@@ -1002,13 +1006,22 @@ _qe_bytestream_need_bits(u3_atom n, u3_noun bits)
 
   while (need_bytes_w--) {
 
+    //  the accumulator [bit_d] is 64 bits, the Hoon's is unbounded; fall
+    //  back to the unjetted +need-bits rather than overflow it. This path
+    //  formerly u3_assert'd here, which aborts the process.
+    //
+    if (num_w + 8 > BITS_D) {
+      return u3_none;
+    }
+
     if (pos_w < len_w) {
-      bit_d += *(sea_y + pos_w) << num_w;
+      //  cast to c3_d: the byte is otherwise promoted to a 32-bit int, so
+      //  the shift is wrong for num_w >= 32
+      //
+      bit_d += (c3_d)*(sea_y + pos_w) << num_w;
     }
     num_w += 8;
     pos_w++;
-
-    u3_assert(num_w <= BITS_D);
   }
 
   u3_noun new_bays = u3nc(u3i_word(pos_w), u3k(octs));
