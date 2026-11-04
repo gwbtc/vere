@@ -322,7 +322,7 @@ _main_getopt(c3_i argc, c3_c** argv)
   };
 
   while ( -1 != (ch_i=getopt_long(argc, argv,
-                 "A:B:C:DF:G:H:I:J:K:LM:PRSX:Y:Z:ab:c:de:gi:jk:ln:p:q:stu:vw:x",
+                 "A:B:C:DF:G:H:I:J:K:LM:PRSW:X:Y:Z:ab:c:de:gi:jk:ln:p:q:stu:vw:x",
                  lop_u, &lid_i)) )
   {
     switch ( ch_i ) {
@@ -611,9 +611,16 @@ _main_getopt(c3_i argc, c3_c** argv)
     u3_Host.ops_u.tem = c3y;
   }
 
-  if ( 0 == u3_Host.ops_u.gat_c ) {
-    u3_Host.ops_u.gat_c = "http://143.198.70.9:8080";
-  }
+  //  NO default gateway.  A Groundwire ship boots entirely from its feed
+  //  (its own identity) and learns every other ship from Bitcoin after
+  //  boot (the %gw-btc epoch scanner feeds jael) -- so it needs to
+  //  contact NOTHING at boot.  The dawn galaxy-table / turf fetches were
+  //  the last things that did, and for a CONFIDENTIAL comet a plaintext
+  //  HTTP GET to a fixed server at birth leaks its IP and boot time and
+  //  pours that server's entire peer table into the new ship's jael.
+  //  So gat_c stays null unless the operator explicitly asks for a
+  //  gateway with -W (a private-network / debugging escape hatch, off by
+  //  default); dawn only fetches when it is set.
 
   {
     struct stat s;
